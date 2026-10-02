@@ -127,7 +127,7 @@
       "apec","apec summit","oic","organisation of islamic cooperation","commonwealth",
       "nato","north atlantic treaty organization","opec","gcc","gulf cooperation council",
       "regional organization","regional cooperation","regional grouping","regional forum",
-      "saarc vs bimstec","regional integration","south asia","southeast asia"
+      "regional integration","south asia","southeast asia"
     ],
     "1.10 CURRENT AFFAIRS": [
       "current affairs","current event","recent event","recent development","latest news",
@@ -213,7 +213,7 @@
       "budget execution","budget monitoring","budget report","red book","red book nepal",
       "estimate","estimate approval","appropriation","appropriation bill","finance bill",
       "revenue","revenue collection","tax revenue","non tax revenue","internal revenue",
-      "vAT","value added tax","income tax","customs","excise duty","land revenue",
+      "vat","value added tax","income tax","customs","excise duty","land revenue",
       "expenditure","government expenditure","capital expenditure","recurrent expenditure",
       "development expenditure","budget deficit","budget surplus","fiscal policy",
       "monetary policy","fiscal year","fy","financial year","accounting",
@@ -297,26 +297,26 @@
   },
   "3": {
     "3.1 Logical Reasoning": [
-        "analogy", "odd one out", "letter series", "number series",
-        "coding decoding", "blood relation", "direction sense",
-        "syllogism", "statement conclusion", "logical deduction",
-        "ranking", "seating arrangement", "puzzle", "arrangement",
-        "if then", "if-then", "logical reasoning", "classification",
-        "alphabet", "sequence", "reasoning", "logical"
+      "analogy","odd one out","letter series","number series",
+      "coding decoding","blood relation","direction sense",
+      "syllogism","statement conclusion","logical deduction",
+      "ranking","seating arrangement","puzzle","arrangement",
+      "if then","if-then","logical reasoning","classification",
+      "alphabet","sequence","reasoning","logical"
     ],
     "3.2 Numerical Reasoning": [
-        "numerical", "arithmetic", "ratio proportion", "average",
-        "percentage", "profit loss", "simple interest",
-        "compound interest", "time work", "time distance", "speed",
-        "mixture", "age problem", "partnership",
-        "numerical reasoning", "calculation", "mental maths"
+      "numerical","arithmetic","ratio proportion","average",
+      "percentage","profit loss","simple interest",
+      "compound interest","time work","time distance","speed",
+      "mixture","age problem","partnership",
+      "numerical reasoning","calculation","mental maths"
     ],
     "3.3 Spatial Reasoning": [
-        "spatial", "figure", "mirror image", "water image",
-        "paper folding", "paper cutting", "embedded figure",
-        "figure series", "rotation", "3d", "cube", "dice",
-        "dot situation", "figure formation", "analytical figure",
-        "pattern completion", "spatial reasoning"
+      "spatial","figure","mirror image","water image",
+      "paper folding","paper cutting","embedded figure",
+      "figure series","rotation","3d","cube","dice",
+      "dot situation","figure formation","analytical figure",
+      "pattern completion","spatial reasoning"
     ]
-}
+  }
 }
