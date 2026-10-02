@@ -1,10 +1,15 @@
 """
-upload_chapters_data.py  (v2)
------------------------------
+upload_chapters_data.py  (v3 — cloud-ready)
+-------------------------------------------
 Uploads abhyas_export/chapters-data.js to the root of ABHYAS_AUTO.
 Preserves file ID. Skips upload if content hash is unchanged.
 
-Improvements over v1:
+Authentication, in priority order:
+  1. GDRIVE_OAUTH_TOKEN env var (JSON string) — used by GitHub Actions
+  2. oauth-token.pickle                        — used locally after first auth
+  3. Interactive browser OAuth                 — first-time local setup only
+
+Improvements:
   • Non-interactive OAuth — fails fast instead of hanging.
   • Content-hash check → no needless uploads.
   • Retry with exponential backoff on Drive 429/5xx.
@@ -19,6 +24,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import os
 import pickle
 import random
@@ -26,6 +32,7 @@ import sys
 import time
 
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -65,30 +72,47 @@ def _save_creds(creds):
 
 
 def client():
+    # 1. env var (GitHub Actions / cloud)
+    raw = os.environ.get("GDRIVE_OAUTH_TOKEN")
+    if raw:
+        try:
+            info = json.loads(raw)
+            creds = Credentials.from_authorized_user_info(info, SCOPES)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            if creds.valid:
+                print("  [auth] using GDRIVE_OAUTH_TOKEN")
+                return build("drive", "v3", credentials=creds,
+                             cache_discovery=False)
+        except Exception as e:
+            print(f"  [auth] GDRIVE_OAUTH_TOKEN invalid: {e}")
+
+    # 2. pickle (local, after first interactive auth)
     creds = _load_creds()
-    if creds and creds.valid:
-        pass
-    elif creds and creds.expired and creds.refresh_token:
+    if creds and not creds.valid and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
             _save_creds(creds)
         except Exception as e:
             print(f"  token refresh failed: {e}")
             creds = None
+    if creds and creds.valid:
+        print("  [auth] using oauth-token.pickle")
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-    if not creds or not creds.valid:
-        if not sys.stdin.isatty():
-            raise RuntimeError(
-                "OAuth token is missing or invalid and stdin is not a "
-                "terminal. Run interactively once to re-authorise."
-            )
-        print("  interactive OAuth required — opening browser ...")
-        flow = InstalledAppFlow.from_client_secrets_file(
-            OAUTH_CREDENTIALS_FILE, SCOPES
+    # 3. interactive (local only)
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "OAuth token missing or invalid and stdin is not a terminal. "
+            "Set GDRIVE_OAUTH_TOKEN (cloud) or run this script "
+            "interactively once (local)."
         )
-        creds = flow.run_local_server(port=0, open_browser=True)
-        _save_creds(creds)
-
+    print("  interactive OAuth required — opening browser ...")
+    flow = InstalledAppFlow.from_client_secrets_file(
+        OAUTH_CREDENTIALS_FILE, SCOPES
+    )
+    creds = flow.run_local_server(port=0, open_browser=True)
+    _save_creds(creds)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
