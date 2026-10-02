@@ -1,0 +1,55 @@
+name: Daily Drivetoneon Pipeline
+
+on:
+  schedule:
+    # Runs at 15:00 UTC every day. Adjust the cron expression if you need a different time.
+    # Cron is always in UTC. For example, '0 2 * * *' would be 2 AM UTC.
+    - cron: '0 15 * * *'
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          # Cache pip dependencies to speed up runs
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up credentials
+        env:
+          # This is where we inject the secrets into the runner's environment
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+        run: |
+          # Create the service account file from the secret
+          echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > service-account.json
+
+      - name: Run the pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+        run: |
+          # Run the scripts in sequence
+          python sync_any_level.py all
+          python dedupe_exact.py --apply --quiet
+          python classify_any_level.py all
+          python classify_with_gemini.py all
+          python export_any_level.py all
+          python upload_any_level.py all
+          python generate_chapters_data_all.py
+          python upload_chapters_data.py
