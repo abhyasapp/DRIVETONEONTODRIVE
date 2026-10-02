@@ -39,7 +39,7 @@ jobs:
           GEMINI_API_KEY_2:     ${{ secrets.GEMINI_API_KEY_2 }}
         run: |
           python sync_any_level.py all
-          python dedupe_exact.py --apply --quiet
+          python dedupe_exact.py --apply
           python classify_any_level.py level5
           python classify_any_level.py level7
           python classify_any_level.py gk
