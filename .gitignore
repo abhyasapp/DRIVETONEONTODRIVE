@@ -1,0 +1,27 @@
+# Sensitive credentials
+service-account.json
+oauth-credentials.json
+oauth-token.pickle
+.env
+API
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Export output
+abhyas_export/
+dedupe_review.csv
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
