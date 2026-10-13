@@ -1,0 +1,71 @@
+# ---------- secrets & credentials ----------
+.env
+.env.*
+!.env.example
+oauth-credentials.json
+oauth-token.pickle
+service-account.json
+client_secret*.json
+token.json
+credentials.json
+
+# base64-encoded secret bundles (do NOT commit)
+*.b64
+oauth-credentials.b64
+oauth-token.pickle.b64
+
+# API key files
+API
+*.api.key
+
+# ---------- python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ---------- editor / IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ---------- OS junk ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ---------- backups / temp / logs ----------
+*.bak
+*.bak[0-9]
+*.bak[0-9][0-9]
+*.orig
+*.old
+*.tmp
+*.temp
+*.log
+logs/
+
+# ---------- project-specific ----------
+abhyas_export/
+allfiles.txt
+notes.md
+*.pickle

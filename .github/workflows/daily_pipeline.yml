@@ -1,0 +1,171 @@
+name: Daily Pipeline
+
+on:
+  schedule:
+    # 06:00 UTC daily (11:45 Nepal time) - adjust to taste
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only these steps (comma-separated, e.g. export,upload). Empty = all.'
+        required: false
+        default: ''
+      skip_gemini:
+        description: 'Skip the Gemini classify step'
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      # Keep Gemini inside the job limit so export/upload/chapters still run.
+      GEMINI_STEP_TIMEOUT: "5400"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Smoke test (offline checks)
+        run: python tests/smoke.py
+
+      # ----- credentials -------------------------------------------------
+
+      - name: Check required secrets exist
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          DATABASE_URL:                ${{ secrets.DATABASE_URL }}
+          ABHYAS_APPS_SCRIPT_URL:      ${{ secrets.ABHYAS_APPS_SCRIPT_URL }}
+          ABHYAS_SYNC_KEY:             ${{ secrets.ABHYAS_SYNC_KEY }}
+          GEMINI_API_KEY:              ${{ secrets.GEMINI_API_KEY }}
+          GDRIVE_OAUTH_TOKEN:          ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          OAUTH_TOKEN_PICKLE:          ${{ secrets.OAUTH_TOKEN_PICKLE }}
+        run: |
+          missing=0
+          for v in GOOGLE_SERVICE_ACCOUNT_JSON DATABASE_URL ABHYAS_APPS_SCRIPT_URL ABHYAS_SYNC_KEY GEMINI_API_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::Secret $v is empty or not set"; missing=1; fi
+          done
+          if [ -z "$GDRIVE_OAUTH_TOKEN" ] && [ -z "$OAUTH_TOKEN_PICKLE" ]; then
+            echo "::error::Set GDRIVE_OAUTH_TOKEN (recommended, JSON) or OAUTH_TOKEN_PICKLE (base64)"
+            missing=1
+          fi
+          exit $missing
+
+      - name: Write service account file
+        env:
+          SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          printf '%s' "$SERVICE_ACCOUNT_JSON" > service-account.json
+          python -c "import json; d=json.load(open('service-account.json')); assert d.get('type')=='service_account' and d.get('private_key'), 'not a service-account key'; print('service-account.json OK:', d['client_email'])" \
+            || { echo "::error::GOOGLE_SERVICE_ACCOUNT_JSON is not valid service-account JSON (paste the whole file contents)"; exit 1; }
+
+      - name: Write OAuth files
+        env:
+          OAUTH_CREDENTIALS_B64: ${{ secrets.OAUTH_CREDENTIALS_JSON }}
+          OAUTH_TOKEN_B64:       ${{ secrets.OAUTH_TOKEN_PICKLE }}
+          GDRIVE_OAUTH_TOKEN:    ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+        run: |
+          # Preferred: GDRIVE_OAUTH_TOKEN (JSON) is read straight from the env
+          # by the upload scripts - nothing to write here.
+          if [ -n "$GDRIVE_OAUTH_TOKEN" ]; then
+            python -c "import json,os; d=json.loads(os.environ['GDRIVE_OAUTH_TOKEN']); assert d.get('refresh_token'), 'no refresh_token'; print('GDRIVE_OAUTH_TOKEN JSON OK')" \
+              || { echo "::error::GDRIVE_OAUTH_TOKEN is not valid token JSON (run: python -m utils.extract_token)"; exit 1; }
+          fi
+          # Legacy fallback: base64 files.
+          if [ -n "$OAUTH_CREDENTIALS_B64" ]; then
+            printf '%s' "$OAUTH_CREDENTIALS_B64" | base64 -d > oauth-credentials.json \
+              || { echo "::error::OAUTH_CREDENTIALS_JSON is not valid base64 (use: base64 -w0 oauth-credentials.json)"; exit 1; }
+          fi
+          if [ -n "$OAUTH_TOKEN_B64" ]; then
+            printf '%s' "$OAUTH_TOKEN_B64" | base64 -d > oauth-token.pickle \
+              || { echo "::error::OAUTH_TOKEN_PICKLE is not valid base64 (use: base64 -w0 oauth-token.pickle)"; exit 1; }
+          fi
+
+      - name: Write .env
+        env:
+          DATABASE_URL:           ${{ secrets.DATABASE_URL }}
+          ABHYAS_APPS_SCRIPT_URL: ${{ secrets.ABHYAS_APPS_SCRIPT_URL }}
+          ABHYAS_SYNC_KEY:        ${{ secrets.ABHYAS_SYNC_KEY }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2:       ${{ secrets.GEMINI_API_KEY_2 }}
+          CEREBRAS_API_KEY:       ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY:     ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          keys = ["DATABASE_URL", "ABHYAS_APPS_SCRIPT_URL", "ABHYAS_SYNC_KEY",
+                  "GEMINI_API_KEY", "GEMINI_API_KEY_2",
+                  "CEREBRAS_API_KEY", "OPENROUTER_API_KEY"]
+          with open(".env", "w") as f:
+              for k in keys:
+                  v = os.environ.get(k, "").strip()   # drop stray newline/space from pasting
+                  if "\n" in v or "\r" in v:
+                      raise SystemExit(f"{k} contains a line break - re-paste it on ONE line")
+                  esc = v.replace("\\", "\\\\").replace('"', '\\"')
+                  f.write(f'{k}="{esc}"\n')
+                  print(f"{k}: {len(v)} chars")
+          PY
+
+      - name: Sanity check credentials
+        env:
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+        run: |
+          set -e
+          test -s service-account.json && echo "service-account.json OK"
+          test -s .env                 && echo ".env OK"
+          if [ -n "$GDRIVE_OAUTH_TOKEN" ]; then
+            echo "Drive upload auth: GDRIVE_OAUTH_TOKEN"
+          else
+            test -s oauth-token.pickle && echo "Drive upload auth: oauth-token.pickle"
+          fi
+
+      # ----- pipeline ----------------------------------------------------
+
+      - name: Run pipeline
+        env:
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          ONLY:               ${{ github.event.inputs.only }}
+          SKIP_GEMINI:        ${{ github.event.inputs.skip_gemini }}
+        run: |
+          args=""
+          [ -n "$ONLY" ] && args="$args --only $ONLY"
+          [ "$SKIP_GEMINI" = "true" ] && args="$args --skip-gemini"
+          # No --quiet: full logs make failures diagnosable.
+          python -m pipeline.run_pipeline $args
+
+      # ----- diagnostics -------------------------------------------------
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Scrub credentials
+        if: always()
+        run: |
+          rm -f service-account.json oauth-credentials.json oauth-token.pickle .env

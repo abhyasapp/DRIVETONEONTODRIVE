@@ -1,0 +1,12 @@
+# Core pipeline (used by .github/workflows/daily_pipeline.yml)
+psycopg2-binary>=2.9,<3
+python-dotenv>=1.0,<2
+google-auth>=2.30,<3
+google-auth-oauthlib>=1.2,<2
+google-auth-httplib2>=0.2,<1
+google-api-python-client>=2.130,<3
+google-genai>=1.0,<2
+openai>=1.40,<3
+
+# Only needed for one-off bootstrap/l7_load_hierarchy.py (not the daily run):
+#   pip install chompjs
