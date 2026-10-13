@@ -109,7 +109,7 @@ STEPS = [
     ("corrections", "Apply corrections to Neon",
      "sync.apply_corrections", ["--apply"],                  600),
     ("dedupe",      "Exact dedupe",
-     "dedupe.dedupe_exact", ["--apply", "--quiet"],            900),
+     "dedupe.dedupe_exact", ["--apply", "--quiet", "--no-near"], 900),
     ("kw_l5",       "Keyword classify level5",
      "classify.classify_any_level", ["level5"],                  600),
     ("kw_l7",       "Keyword classify level7",

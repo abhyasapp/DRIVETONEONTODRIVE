@@ -143,7 +143,7 @@ CEREBRAS_TIERS = [
      ["gpt-oss-120b", "qwen-3.8-27b", "llama-3.3-70b"]),
 ]
 OPENROUTER_TIERS = [
-    (920, "openrouter", "https://api.openrouter.ai/v1",
+    (920, "openrouter", "https://openrouter.ai/api/v1",
      ["openrouter/free",
       "meta-llama/llama-3.3-70b-instruct:free",
       "qwen/qwen3-32b:free"]),
