@@ -164,7 +164,8 @@ def main():
               SELECT 1 FROM question_subtopics qs
               JOIN subtopics s ON s.id = qs.subtopic_id
               WHERE qs.question_id = q.id
-                AND (s.code <> 'mixedqn' OR qs.classified_by = 'manual')
+                AND (s.code <> 'mixedqn'
+                     OR qs.classified_by IN ('manual', 'deferred'))
           )
         ORDER BY q.id
     """, (level_id,))
