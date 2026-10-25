@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-run_pipeline.py  (v6.2 - with corrections step)
-------------------------------------------------
+run_pipeline.py  (v6.4 - non-fatal steps, upload fatal, v7 dedupe)
+-------------------------------------------------------------------
 Daily pipeline: sync -> corrections -> dedupe -> classify -> export -> upload -> chapters
 
 Steps (11):
@@ -18,8 +18,10 @@ Steps (11):
   11. chapters_up  upload_chapters_data.py
 
 Behaviour:
-  * Exit code is NON-ZERO if pre-flight fails, dedupe aborts, or any step
-    fails (so GitHub Actions turns red instead of green).
+  * Exit code is NON-ZERO if pre-flight fails, dedupe aborts, or a
+    FATAL_STEPS member (dedupe / upload) fails. Non-fatal failures
+    (corrections, kw_*, gemini, export, chapters) are logged in the
+    SUMMARY but do not turn the run red.
   * --quiet still prints the last lines of any failing step (tracebacks).
   * Optional steps are skipped cleanly when their script is missing.
   * UTF-8 safe.
@@ -108,8 +110,9 @@ STEPS = [
      "sync.sync_any_level", ["all"],                        1800),
     ("corrections", "Apply corrections to Neon",
      "sync.apply_corrections", ["--apply"],                  600),
-    ("dedupe",      "Exact dedupe",
-     "dedupe.dedupe_exact", ["--apply", "--quiet", "--no-near"], 900),
+    # v7 dedupe: no --no-near flag (removed in v7, run near-diff via --samples)
+    ("dedupe",      "Exact dedupe (content identity)",
+     "dedupe.dedupe_exact", ["--apply", "--quiet"],           900),
     ("kw_l5",       "Keyword classify level5",
      "classify.classify_any_level", ["level5"],                  600),
     ("kw_l7",       "Keyword classify level7",
@@ -131,8 +134,15 @@ STEPS = [
 # Steps whose names start with this run in parallel with each other.
 PARALLEL_PREFIX = "kw_"
 
-# If any of these fail, stop the pipeline.
-FATAL_STEPS = {"dedupe"}
+# Only these step failures turn the run red (exit 1). Other failures are
+# logged in the SUMMARY but do not fail CI.
+#   - dedupe: pool integrity. If we ship an un-deduped pool, downstream
+#     classify/export operate on garbage.
+#   - upload: if Drive upload fails, the app keeps serving yesterday's
+#     JSON while Neon moved on — silent divergence. Must fail loudly.
+# Add "sync" here if you want a Drive outage to red the run (arguably
+# correct: with sync failed, the pipeline re-exports stale Neon data).
+FATAL_STEPS = {"dedupe", "upload"}
 
 # Steps that must NOT be retried automatically.
 NO_RETRY_STEPS = {"gemini", "upload", "corrections"}
@@ -733,9 +743,13 @@ def main():
         log(fh, "=" * 66)
 
     # Non-zero exit so CI (GitHub Actions / Task Scheduler) notices failures.
+    # Only failures in FATAL_STEPS turn the run red. Non-fatal failures
+    # (corrections, kw_*, gemini, export, chapters) are already summarized
+    # in the SUMMARY block above; they do not fail CI.
     if aborted:
         sys.exit(3)
-    if failed:
+    fatal_failures = [r for r in failed if r[0] in FATAL_STEPS]
+    if fatal_failures:
         sys.exit(1)
 
 
