@@ -7,6 +7,8 @@ google-auth-httplib2>=0.2,<1
 google-api-python-client>=2.130,<3
 google-genai>=1.0,<2
 openai>=1.40,<3
+requests>=2.31
+rapidfuzz>=3.9
 
 # Only needed for one-off bootstrap/l7_load_hierarchy.py (not the daily run):
 #   pip install chompjs

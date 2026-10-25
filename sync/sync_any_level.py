@@ -1,7 +1,13 @@
 """
-sync_any_level.py  (v6)
------------------------
+sync_any_level.py  (v6.1)
+-------------------------
 Robust incremental Google Drive → Neon sync.
+
+Changes in v6.1:
+  • GK: added "Current Affairs" folder mapping (was warning as unmapped).
+    Mapped to chapter "1" because gk_keywords.json has 3 chapters and
+    chapter 1 already contains subtopic "1.10 CURRENT AFFAIRS". The
+    classifier sorts the folder's contents into that subtopic.
 
 Changes in v6:
   • New per-level flag `use_file_as_book` (default False).
@@ -124,6 +130,7 @@ LEVEL_CONFIG = {
             "chapter 1: gk":         "1",
             "CHAPTER 2: MANAGEMENT": "2",
             "chapter 3: iq":         "3",
+            "Current Affairs":       "1",
         },
         "default_book": "GATE",          # unused when use_file_as_book=True
         "use_subfolder_as_book": True,   # subfolder = book

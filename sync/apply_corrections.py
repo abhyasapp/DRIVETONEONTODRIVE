@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-apply_corrections.py
---------------------
+apply_corrections.py  (v2)
+--------------------------
 Pull corrections from the Abhyas Apps Script backend and apply them to
 Neon BEFORE dedupe and export.
 
-Run order in run_pipeline.py:  sync -> corrections -> dedupe -> classify -> export.
+Run order: sync -> corrections -> dedupe -> classify -> export.
 
 Usage:
     python apply_corrections.py                        # dry-run
     python apply_corrections.py --apply                # write
-    python apply_corrections.py --apply --force        # ignore last_read, rescan all
+    python apply_corrections.py --apply --force        # ignore last_read
     python apply_corrections.py --apply --level level5 # one level only
 """
 import argparse
@@ -18,20 +18,23 @@ import json
 import os
 import re
 import sys
-import urllib.request
 
+import requests
 from psycopg2.extras import Json
 from dotenv import load_dotenv
 
 from utils.db import connect as db_connect
-
-from dedupe.dedupe_exact import signature
+from dedupe.content_identity import identity, compute_quality_score
 
 load_dotenv()
 
 APPS_URL = os.getenv("ABHYAS_APPS_SCRIPT_URL")
 SYNC_KEY = os.getenv("ABHYAS_SYNC_KEY")
 FETCH_TIMEOUT = 90
+
+
+class BackendError(RuntimeError):
+    pass
 
 
 def ensure_schema(cur, conn):
@@ -71,37 +74,68 @@ def set_last_read(cur, ts):
 
 
 def fetch_corrections(since_ms, limit=500):
+    if not APPS_URL:
+        raise BackendError("ABHYAS_APPS_SCRIPT_URL not set in .env")
+    if not SYNC_KEY:
+        raise BackendError("ABHYAS_SYNC_KEY not set in .env")
+
     body = json.dumps({
         "action": "syncCorrectionsSince",
         "key": SYNC_KEY,
         "since": since_ms,
         "limit": limit,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        APPS_URL, data=body,
-        headers={"Content-Type": "text/plain"}, method="POST")
-    with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as r:
-        return json.loads(r.read().decode("utf-8"))
+    })
+
+    try:
+        r = requests.post(
+            APPS_URL, data=body,
+            headers={"Content-Type": "text/plain"},
+            timeout=FETCH_TIMEOUT,
+        )
+    except requests.exceptions.Timeout:
+        raise BackendError(f"timeout after {FETCH_TIMEOUT}s reaching {APPS_URL}")
+    except requests.exceptions.ConnectionError as e:
+        raise BackendError(f"connection failed to {APPS_URL}: {type(e).__name__}")
+
+    if r.status_code in (401, 403):
+        raise BackendError(
+            f"HTTP {r.status_code} — ABHYAS_SYNC_KEY does not match "
+            f"SYNC_KEY in the Apps Script project."
+        )
+    if 400 <= r.status_code < 500:
+        raise BackendError(f"HTTP {r.status_code} — {r.text[:200]!r}")
+    if r.status_code >= 500:
+        raise BackendError(f"HTTP {r.status_code} — {r.text[:200]!r}")
+
+    try:
+        payload = r.json()
+    except ValueError:
+        raise BackendError(
+            f"non-JSON response ({r.headers.get('Content-Type','?')}): "
+            f"{r.text[:200]!r}"
+        )
+
+    return payload
 
 
 def normalize_question_text(text):
     return re.sub(r"^\s*\d+\s*[\.\)]\s*", "", str(text or "")).strip()
 
 
-def find_match(cur, before_question, before_options, before_hash):
+def find_match(cur, before_question, before_options, before_identity):
     cur.execute("""
         SELECT id, question_text, options, file_ref_id
         FROM questions
-        WHERE canonical_id IS NULL AND strict_sig = %s
+        WHERE canonical_id IS NULL AND identity_key = %s
         LIMIT 5
-    """, (before_hash,))
+    """, (before_identity,))
     rows = cur.fetchall()
     if len(rows) == 1:
-        return rows[0], "strict_sig"
+        return rows[0], "identity"
     if len(rows) > 1:
-        return None, f"ambiguous_strict_sig({len(rows)})"
+        return None, f"ambiguous_identity({len(rows)})"
 
-    norm_text = normalize_question_text(before_question)
+    norm = normalize_question_text(before_question)
     cur.execute("""
         SELECT id, question_text, options, file_ref_id
         FROM questions
@@ -109,7 +143,7 @@ def find_match(cur, before_question, before_options, before_hash):
           AND regexp_replace(question_text, '^\\s*\\d+\\s*[\\.\\)]\\s*', '') = %s
           AND options = %s
         LIMIT 5
-    """, (norm_text, Json(before_options)))
+    """, (norm, Json(before_options)))
     rows = cur.fetchall()
     if len(rows) == 1:
         return rows[0], "text_options"
@@ -122,13 +156,6 @@ def find_match(cur, before_question, before_options, before_hash):
 def apply_one(cur, corr):
     uid = corr["uid"]
     corrected_at = corr["correctedAt"]
-
-    cur.execute("""
-        SELECT 1 FROM applied_corrections
-        WHERE uid = %s AND corrected_at = %s
-    """, (uid, corrected_at))
-    if cur.fetchone():
-        return None, "already_applied"
 
     before = corr.get("before") or {}
     after  = corr.get("after")  or {}
@@ -144,14 +171,15 @@ def apply_one(cur, corr):
     if not isinstance(ao, list):
         return None, "invalid_after_options"
 
-    before_hash = signature(bq, bo)
-    row, why = find_match(cur, bq, bo, before_hash)
+    before_id = identity(bq, bo)
+    row, why = find_match(cur, bq, bo, before_id)
     if row is None:
         return None, why
 
     qid, _old_text, _old_opts, file_ref_id = row
     new_text = normalize_question_text(aq)
-    new_sig  = signature(aq, ao)
+    new_identity = identity(aq, ao)
+    new_quality = compute_quality_score(ax, ao, len(new_text))
     correct_text = ao[ac] if isinstance(ac, int) and 0 <= ac < len(ao) else None
 
     cur.execute("""
@@ -161,19 +189,25 @@ def apply_one(cur, corr):
             correct_index = %s,
             correct_text  = %s,
             explanation   = COALESCE(NULLIF(%s, ''), explanation),
-            strict_sig    = %s,
+            identity_key  = %s,
+            quality_score = %s,
             corrected_at  = %s
         WHERE id = %s
     """, (
-        new_text,
-        Json(ao),
+        new_text, Json(ao),
         ac if isinstance(ac, int) else None,
         correct_text,
         ax,
-        new_sig,
-        corrected_at,
-        qid,
+        new_identity, new_quality,
+        corrected_at, qid,
     ))
+
+    cur.execute("""
+        UPDATE similarity_reviews
+           SET status = 'stale'
+         WHERE status = 'pending'
+           AND (q1_id = %s OR q2_id = %s)
+    """, (qid, qid))
 
     if file_ref_id:
         cur.execute("UPDATE files SET last_synced_at = NOW() WHERE id = %s",
@@ -183,7 +217,14 @@ def apply_one(cur, corr):
         INSERT INTO applied_corrections
             (uid, corrected_at, matched_by, question_id, file_id, notes)
         VALUES (%s, %s, %s, %s, %s, %s)
-    """, (uid, corrected_at, why, qid, corr.get("fileId"), corr.get("note") or ""))
+        ON CONFLICT (uid, corrected_at) DO UPDATE SET
+            matched_by  = EXCLUDED.matched_by,
+            question_id = EXCLUDED.question_id,
+            file_id     = EXCLUDED.file_id,
+            notes       = EXCLUDED.notes,
+            applied_at  = NOW()
+    """, (uid, corrected_at, why, qid, corr.get("fileId"),
+          corr.get("note") or ""))
 
     return qid, f"applied_{why}"
 
@@ -195,9 +236,6 @@ def main():
     ap.add_argument("--level", default=None)
     args = ap.parse_args()
 
-    if not APPS_URL or not SYNC_KEY:
-        print("ERROR: ABHYAS_APPS_SCRIPT_URL and ABHYAS_SYNC_KEY must be set.")
-        sys.exit(1)
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
         print("ERROR: DATABASE_URL not set.")
@@ -223,8 +261,7 @@ def main():
             SELECT 1 FROM files f
             JOIN books b ON b.id = f.book_id
             JOIN chapters c ON c.id = b.chapter_id
-            WHERE f.file_id = %s AND c.level_id = %s
-            LIMIT 1
+            WHERE f.file_id = %s AND c.level_id = %s LIMIT 1
         """, (fid, level_id))
         return cur.fetchone() is not None
 
@@ -234,8 +271,8 @@ def main():
 
     try:
         resp = fetch_corrections(since)
-    except Exception as e:
-        print(f"ERROR fetching: {e}")
+    except BackendError as e:
+        print(f"Backend error: {e}")
         sys.exit(1)
 
     if not resp.get("success"):
@@ -283,7 +320,6 @@ def main():
     else:
         conn.rollback()
         print("  Dry-run — no changes written.")
-        print("  Re-run with --apply to write.")
 
     if errors:
         print()

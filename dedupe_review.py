@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-dedupe_review.py
-================
-
-Read-only. Exports everything dedupe_exact.py --apply would delete to
-a CSV, so you can eyeball the rows before pulling the trigger.
+dedupe_review.py  (v2)
+======================
+Read-only. Exports identity groups to CSV so you can eyeball them.
+Uses identity_key (v7). Shows what WOULD be deleted and what is in conflict.
 
 USAGE
 -----
@@ -20,6 +19,7 @@ import sys
 from dotenv import load_dotenv
 
 from utils.db import connect as db_connect
+from dedupe.content_identity import canonical_answer
 
 load_dotenv()
 
@@ -45,18 +45,17 @@ def main():
 
     try:
         cur.execute("""
-            SELECT q.strict_sig, q.id, q.question_text, q.options,
-                   q.correct_index, q.correct_text,
-                   EXTRACT(EPOCH FROM f.last_synced_at),
+            SELECT q.identity_key, q.id, q.question_text, q.options,
+                   q.correct_index, q.correct_text, q.quality_score,
                    EXTRACT(EPOCH FROM q.corrected_at)
             FROM questions q
-            LEFT JOIN files f ON f.id = q.file_ref_id
-            WHERE q.strict_sig IN (
-                SELECT strict_sig FROM questions
-                WHERE strict_sig IS NOT NULL
-                GROUP BY strict_sig HAVING COUNT(*) > 1
+            WHERE q.identity_key IN (
+                SELECT identity_key FROM questions
+                WHERE identity_key IS NOT NULL AND canonical_id IS NULL
+                GROUP BY identity_key HAVING COUNT(*) > 1
             )
-            ORDER BY q.strict_sig, q.id
+              AND q.canonical_id IS NULL
+            ORDER BY q.identity_key, q.id
         """)
 
         groups = {}
@@ -67,32 +66,30 @@ def main():
             w = csv.writer(fh)
             w.writerow([
                 "action", "reason", "group_size",
-                "strict_sig_short",
+                "identity_short",
                 "id", "question_text", "options",
                 "correct_index", "correct_text",
-                "synced_at", "keeper_id",
+                "quality_score", "keeper_id",
             ])
 
             total_del = 0
             total_conflict = 0
 
-            for sig, rows in groups.items():
+            for ident, rows in groups.items():
                 def key(r):
-                    qid, txt, opts, ci, ct, synced, corrected = (
+                    qid, txt, opts, ci, ct, qs, corrected = (
                         r[1], r[2] or "", r[3], r[4], r[5], r[6], r[7]
                     )
                     return (
                         -float(corrected or 0),
-                        -float(synced or 0),
-                        0 if (ci is not None or ct is not None) else 1,
-                        -len(txt),
+                        -float(qs or 0),
                         qid,
                     )
                 keeper = min(rows, key=key)
 
                 answers = {
-                    (r[4], r[5]) for r in rows
-                    if r[4] is not None or r[5] is not None
+                    canonical_answer(r[5]) if r[5] is not None else "__unanswered__"
+                    for r in rows
                 }
                 reason = "conflict" if len(answers) > 1 else "exact"
 
@@ -102,22 +99,21 @@ def main():
                 for r in rows:
                     qid = r[1]
                     action = "KEEP" if qid == keeper[1] else "DELETE"
-                    if action == "DELETE":
+                    if action == "DELETE" and reason == "exact":
                         total_del += 1
-                        if reason == "conflict":
-                            total_conflict += 1
+                    if reason == "conflict":
+                        total_conflict += 1
                     w.writerow([
-                        action, reason, len(rows), sig[:12],
+                        action, reason, len(rows), ident[:12],
                         qid, r[2], r[3],
                         r[4], r[5], r[6], keeper[1],
                     ])
 
         print(f"Wrote {args.out}")
-        print(f"  rows to delete:       {total_del}")
-        print(f"  of which conflicts:   {total_conflict}")
+        print(f"  rows that would be deleted (exact): {total_del}")
+        print(f"  rows in conflict (skipped):         {total_conflict}")
         print()
-        print("Open the CSV in Excel. Filter action=DELETE, reason=conflict")
-        print("to review the risky ones first.")
+        print("Note: conflicts are SKIPPED by dedupe_exact v7.")
 
     finally:
         cur.close()
