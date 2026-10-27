@@ -398,9 +398,14 @@ def preflight(step_names):
     if needs_db and not os.getenv("DATABASE_URL"):
         problems.append("DATABASE_URL not set in .env")
 
+    # Only `sync` (Drive -> DB) reads with the service account; upload and
+    # chapters_up use OAuth. Demanding one when the other is selected used
+    # to block runs that legitimately have no sync credentials.
+    if "sync" in set(step_names) and not os.path.exists(
+            os.path.join(PROJECT, "service-account.json")):
+        problems.append("service-account.json missing")
+
     if needs_drive:
-        if not os.path.exists(os.path.join(PROJECT, "service-account.json")):
-            problems.append("service-account.json missing")
         # Drive upload auth: JSON token in env (CI) OR local pickle file.
         if not os.getenv("GDRIVE_OAUTH_TOKEN") and not os.path.exists(
                 os.path.join(PROJECT, "oauth-token.pickle")):
