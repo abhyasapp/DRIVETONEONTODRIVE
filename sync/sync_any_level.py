@@ -933,11 +933,16 @@ def parse_args(argv):
 
 def main():
     levels, workers, batch, dry_run = parse_args(sys.argv)
+    failed = []
     for level in levels:
         try:
             sync_level(level, workers=workers, batch_size=batch, dry_run=dry_run)
         except Exception as exc:
             print(f"\nERROR syncing {level}: {exc}")
+            failed.append(level)
+    if failed:
+        print("FAILED levels: " + ", ".join(failed))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

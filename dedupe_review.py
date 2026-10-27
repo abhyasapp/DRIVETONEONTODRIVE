@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-dedupe_review.py  (v2)
+dedupe_review.py  (v4)
 ======================
 Read-only. Exports identity groups to CSV so you can eyeball them.
-Uses identity_key (v7). Shows what WOULD be deleted and what is in conflict.
+Uses identity_key. Shows what WOULD be deleted and what is in conflict.
+
+SCOPE (matches dedupe_exact v9): a group is one identity INSIDE ONE
+CHAPTER. Inside a conflicted group, every copy that agrees with a sibling
+is marked DELETE; only singleton copies without an agreeing sibling are kept.
 
 USAGE
 -----
@@ -45,29 +49,37 @@ def main():
 
     try:
         cur.execute("""
-            SELECT q.identity_key, q.id, q.question_text, q.options,
+            SELECT c.id, q.identity_key, q.id, q.question_text, q.options,
                    q.correct_index, q.correct_text, q.quality_score,
                    EXTRACT(EPOCH FROM q.corrected_at)
             FROM questions q
-            WHERE q.identity_key IN (
-                SELECT identity_key FROM questions
-                WHERE identity_key IS NOT NULL AND canonical_id IS NULL
-                GROUP BY identity_key HAVING COUNT(*) > 1
+            JOIN files f    ON f.id = q.file_ref_id
+            JOIN books b    ON b.id = f.book_id
+            JOIN chapters c ON c.id = b.chapter_id
+            WHERE (c.id, q.identity_key) IN (
+                SELECT c.id, q.identity_key
+                FROM questions q
+                JOIN files f    ON f.id = q.file_ref_id
+                JOIN books b    ON b.id = f.book_id
+                JOIN chapters c ON c.id = b.chapter_id
+                WHERE q.identity_key IS NOT NULL
+                  AND q.canonical_id IS NULL
+                GROUP BY c.id, q.identity_key HAVING COUNT(*) > 1
             )
               AND q.canonical_id IS NULL
-            ORDER BY q.identity_key, q.id
+            ORDER BY c.id, q.identity_key, q.id
         """)
 
         groups = {}
         for row in cur.fetchall():
-            groups.setdefault(row[0], []).append(row)
+            groups.setdefault((row[0], row[1]), []).append(row)
 
         with open(args.out, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow([
                 "action", "reason", "group_size",
                 "identity_short",
-                "id", "question_text", "options",
+                "chapter", "id", "question_text", "options",
                 "correct_index", "correct_text",
                 "quality_score", "keeper_id",
             ])
@@ -75,45 +87,58 @@ def main():
             total_del = 0
             total_conflict = 0
 
-            for ident, rows in groups.items():
+            for (chapter, ident), rows in groups.items():
                 def key(r):
-                    qid, txt, opts, ci, ct, qs, corrected = (
-                        r[1], r[2] or "", r[3], r[4], r[5], r[6], r[7]
-                    )
+                    qid, qs, corrected = r[2], r[7], r[8]
                     return (
                         -float(corrected or 0),
                         -float(qs or 0),
                         qid,
                     )
-                keeper = min(rows, key=key)
 
-                answers = {
-                    canonical_answer(r[5]) if r[5] is not None else "__unanswered__"
-                    for r in rows
-                }
-                reason = "conflict" if len(answers) > 1 else "exact"
+                # bucket by normalized answer (matches dedupe_exact v9)
+                buckets = {}
+                for r in rows:
+                    k = canonical_answer(r[6]) if r[6] is not None else "__unanswered__"
+                    buckets.setdefault(k, []).append(r)
 
-                if args.conflicts_only and reason != "conflict":
+                conflicted = len(buckets) > 1
+                deletable_ids = set()
+                keepers = set()
+                for b in buckets.values():
+                    if len(b) < 2:
+                        continue          # singleton copy: nothing to merge
+                    b_keeper = min(b, key=key)
+                    keepers.add(b_keeper[2])
+                    for r in b:
+                        if r[2] != b_keeper[2]:
+                            deletable_ids.add(r[2])
+
+                if args.conflicts_only and not conflicted:
                     continue
 
                 for r in rows:
-                    qid = r[1]
-                    action = "KEEP" if qid == keeper[1] else "DELETE"
-                    if action == "DELETE" and reason == "exact":
+                    qid = r[2]
+                    action = "KEEP" if qid not in deletable_ids else "DELETE"
+                    if action == "DELETE":
                         total_del += 1
-                    if reason == "conflict":
+                    elif conflicted:
                         total_conflict += 1
                     w.writerow([
-                        action, reason, len(rows), ident[:12],
-                        qid, r[2], r[3],
-                        r[4], r[5], r[6], keeper[1],
+                        action,
+                        "conflict" if conflicted else "exact",
+                        len(rows), ident[:12],
+                        chapter, qid, r[3], r[4],
+                        r[5], r[6], r[7],
+                        ",".join(str(k) for k in sorted(keepers)),
                     ])
 
         print(f"Wrote {args.out}")
-        print(f"  rows that would be deleted (exact): {total_del}")
-        print(f"  rows in conflict (skipped):         {total_conflict}")
+        print(f"  rows that would be deleted (copies that agree with a sibling): {total_del}")
+        print(f"  rows kept in conflict (no agreeing sibling):                    {total_conflict}")
         print()
-        print("Note: conflicts are SKIPPED by dedupe_exact v7.")
+        print("Note: matches dedupe_exact v9 -- agreeing copies are merged even")
+        print("      inside a group where other copies disagree on the answer.")
 
     finally:
         cur.close()

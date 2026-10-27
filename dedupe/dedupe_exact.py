@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""dedupe_exact.py (v7 — content identity). Merges duplicates. Skips conflicts."""
+"""dedupe_exact.py (v9 — content identity, chapter scope).
+
+Merges duplicates. Inside a group whose copies disagree on the answer,
+the copies that AGREE with each other are still merged (keeper picked per
+agreeing answer); only genuinely disagreeing single copies are left alone.
+
+SCOPE: a duplicate group is one identity WITHIN ONE CHAPTER.  Questions are
+only compared against copies that live in the same chapter (every book /
+file / subtopic of that chapter counts) — never across chapters or levels.
+"""
 
 import argparse
 import json
@@ -13,7 +22,7 @@ from dotenv import load_dotenv
 
 from utils.db import connect as db_connect
 from dedupe.content_identity import (
-    identity, canonical_answer, compute_quality_score, _canonical,
+    identity, canonical_answer, compute_quality_score,
 )
 
 load_dotenv()
@@ -22,6 +31,21 @@ ADVISORY_LOCK     = 0x64656475706571
 STATEMENT_TIMEOUT = "30min"
 CHUNK_SIZE        = 5000
 DELETE_CHUNK      = 500
+
+# ---------------------------------------------------------------------------
+# Chapter scope
+# ---------------------------------------------------------------------------
+# A duplicate group is one identity_key INSIDE ONE CHAPTER.  A question is
+# only compared against copies that live in the same chapter -- every book,
+# file and subtopic of that chapter counts, but never another chapter and
+# never another level.  The join is INNER: a question whose file -> book ->
+# chapter chain is broken is left alone rather than merged with strangers.
+CHAPTER_JOIN = """FROM questions q
+        JOIN files f    ON f.id = q.file_ref_id
+        JOIN books b    ON b.id = f.book_id
+        JOIN chapters c ON c.id = b.chapter_id"""
+
+GROUP_COLS = "c.id, q.identity_key"      # what defines "the same question"
 
 
 def coerce_options(opts):
@@ -135,9 +159,15 @@ def populate_identities(cur, conn):
             processed += len(rows)
         batch_start = batch_end
 
+    # "uniq" counts groups per CHAPTER, so the same question sitting in two
+    # different chapters is not counted as reducible.
     cur.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT identity_key) FROM questions "
-        "WHERE canonical_id IS NULL AND identity_key IS NOT NULL"
+        f"""SELECT COALESCE(SUM(n), 0), COUNT(*)
+           FROM (SELECT COUNT(*) AS n
+                 {CHAPTER_JOIN}
+                 WHERE q.canonical_id IS NULL
+                   AND q.identity_key IS NOT NULL
+                 GROUP BY {GROUP_COLS}) g"""
     )
     total_rows, uniq = cur.fetchone()
     reducible = (total_rows or 0) - (uniq or 0)
@@ -154,21 +184,56 @@ def pick_keeper(items):
     return min(items, key=_keeper_key)
 
 
-def load_groups(cur, idents):
-    if not idents:
-        return {}
+def select_group_keys(cur, after=None, limit=5000):
+    """(chapter_id, identity_key) pairs holding more than one live copy.
+
+    Pairs are ordered by (chapter, identity), so `after` -- the last pair of
+    -- the previous page -- is a cursor that never skips or repeats a group.
+    """
+    where = "q.identity_key IS NOT NULL AND q.canonical_id IS NULL"
+    params = []
+    if after is not None:
+        where += " AND (c.id, q.identity_key) > (%s, %s)"
+        params = [after[0], after[1]]
+    params.append(limit)
     cur.execute(
-        """SELECT q.id, q.identity_key, q.question_text, q.options,
+        f"""SELECT c.id, q.identity_key
+            {CHAPTER_JOIN}
+            WHERE {where}
+            GROUP BY {GROUP_COLS}
+            HAVING COUNT(*) > 1
+            ORDER BY c.id, q.identity_key
+            LIMIT %s""",
+        tuple(params),
+    )
+    return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+def load_groups(cur, keys):
+    """keys: [(chapter_id, identity_key), ...] -> groups keyed the same way.
+
+    The fetch is driven by identity_key alone (index-friendly); rows belonging
+    to the same identity in ANOTHER chapter are dropped here, which is what
+    keeps the merge inside a single chapter.
+    """
+    if not keys:
+        return {}
+    wanted = set(keys)
+    idents = sorted({k[1] for k in keys})
+    cur.execute(
+        f"""SELECT q.id, c.id, q.identity_key, q.question_text, q.options,
                   q.correct_index, q.correct_text, q.quality_score,
                   EXTRACT(EPOCH FROM q.corrected_at)
-           FROM questions q
-           WHERE q.identity_key = ANY(%s) AND q.canonical_id IS NULL
-           ORDER BY q.identity_key, q.id""",
+            {CHAPTER_JOIN}
+            WHERE q.identity_key = ANY(%s) AND q.canonical_id IS NULL
+            ORDER BY q.identity_key, q.id""",
         (idents,),
     )
     groups = {}
-    for (qid, ident, txt, opts, ci, ct, qs, corrected) in cur.fetchall():
-        groups.setdefault(ident, []).append({
+    for (qid, chapter, ident, txt, opts, ci, ct, qs, corrected) in cur.fetchall():
+        if (chapter, ident) not in wanted:
+            continue
+        groups.setdefault((chapter, ident), []).append({
             "id": qid, "text": txt or "",
             "options": coerce_options(opts),
             "ci": ci, "ct": ct,
@@ -180,11 +245,14 @@ def load_groups(cur, idents):
 
 def plan_deletions(groups):
     """
-    Per group: partition by normalized answer, merge within each partition,
-    skip groups with conflicting answers (leave all copies alone).
+    Per group: partition by normalized answer, merge within each partition.
+    A group where answers disagree is only PARTIALLY merged: every
+    partition that internally agrees (2+ copies, same answer) is merged;
+    singleton copies are left alone. `conflicts` counts groups that had
+    more than one answer partition (i.e. copies that were kept).
     """
     plans, conflicts = [], 0
-    for ident, items in groups.items():
+    for (_chapter, ident), items in groups.items():
         if len(items) < 2:
             continue
         buckets = {}
@@ -194,7 +262,6 @@ def plan_deletions(groups):
 
         if len(buckets) > 1:
             conflicts += 1
-            continue
 
         for bucket in buckets.values():
             keeper = pick_keeper(bucket)
@@ -231,26 +298,27 @@ def apply_deletions(cur, conn, plans, child_fks):
 
 def show_samples(cur, n=5):
     cur.execute(
-        """SELECT identity_key FROM questions
-           WHERE identity_key IS NOT NULL AND canonical_id IS NULL
-           GROUP BY identity_key HAVING COUNT(*) > 1
+        f"""SELECT c.id, q.identity_key
+           {CHAPTER_JOIN}
+           WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
+           GROUP BY {GROUP_COLS} HAVING COUNT(*) > 1
            ORDER BY COUNT(*) DESC LIMIT %s""",
         (n,),
     )
-    idents = [r[0] for r in cur.fetchall()]
-    if not idents:
+    keys = [(r[0], r[1]) for r in cur.fetchall()]
+    if not keys:
         print("      (no duplicate groups)")
         return
-    groups = load_groups(cur, idents)
-    for i, ident in enumerate(idents, 1):
-        items = groups.get(ident, [])
+    groups = load_groups(cur, keys)
+    for i, (chapter, ident) in enumerate(keys, 1):
+        items = groups.get((chapter, ident), [])
         buckets = {}
         for it in items:
             k = canonical_answer(it["ct"]) if it["ct"] is not None else "__unanswered__"
             buckets.setdefault(k, []).append(it)
-        flag = "  [CONFLICT→SKIP]" if len(buckets) > 1 else ""
-        print(f"\n      -- group {i}/{len(idents)} — {len(items)} copies — "
-              f"ident {ident[:12]}...{flag}")
+        flag = "  [CONFLICT — agreeing copies still merged]" if len(buckets) > 1 else ""
+        print(f"\n      -- group {i}/{len(keys)} — {len(items)} copies — "
+              f"chapter {chapter}  ident {ident[:12]}...{flag}")
         for bucket in buckets.values():
             keeper = pick_keeper(bucket)
             for it in sorted(bucket, key=_keeper_key):
@@ -268,7 +336,7 @@ def main():
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print("=" * 66)
-    print(f"CONTENT-IDENTITY DEDUPE  v7  [{mode}]")
+    print(f"CONTENT-IDENTITY DEDUPE  v9 (chapter scope)  [{mode}]")
     print("=" * 66)
 
     dsn = os.getenv("DATABASE_URL")
@@ -283,8 +351,11 @@ def main():
     try:
         cur.execute(f"SET statement_timeout = '{STATEMENT_TIMEOUT}'")
         if not acquire_lock(cur):
-            print("ERROR: another dedupe is running.")
-            return
+            print("ERROR: another dedupe is running — failing loudly so the "
+                  "pipeline treats this run as skipped, not successful.")
+            release_lock(cur)
+            conn.close()
+            sys.exit(1)
 
         try:
             print("\n[1/3] Schema")
@@ -293,12 +364,13 @@ def main():
             print("[2/3] Identities")
             populate_identities(cur, conn)
 
-            print("[3/3] Groups")
+            print("[3/3] Groups (chapter scope)")
             cur.execute(
-                """SELECT COUNT(*) FROM (
-                     SELECT identity_key FROM questions
-                     WHERE identity_key IS NOT NULL AND canonical_id IS NULL
-                     GROUP BY identity_key HAVING COUNT(*) > 1
+                f"""SELECT COUNT(*) FROM (
+                     SELECT 1 {CHAPTER_JOIN}
+                     WHERE q.identity_key IS NOT NULL
+                       AND q.canonical_id IS NULL
+                     GROUP BY {GROUP_COLS} HAVING COUNT(*) > 1
                    ) x"""
             )
             n_groups = cur.fetchone()[0]
@@ -319,31 +391,14 @@ def main():
             print("\nApplying ...")
             children = discover_child_fks(cur)
 
-            # Page through groups
+            # Page through (chapter, identity) groups
             last = None
             total_merged = 0
             total_conflicts = 0
             while True:
-                if last is None:
-                    cur.execute(
-                        """SELECT identity_key FROM questions
-                           WHERE identity_key IS NOT NULL AND canonical_id IS NULL
-                           GROUP BY identity_key HAVING COUNT(*) > 1
-                           ORDER BY identity_key LIMIT 5000"""
-                    )
-                else:
-                    cur.execute(
-                        """SELECT identity_key FROM questions
-                           WHERE identity_key IS NOT NULL AND canonical_id IS NULL
-                             AND identity_key > %s
-                           GROUP BY identity_key HAVING COUNT(*) > 1
-                           ORDER BY identity_key LIMIT 5000""",
-                        (last,),
-                    )
-                rows = cur.fetchall()
-                if not rows:
+                page = select_group_keys(cur, after=last, limit=5000)
+                if not page:
                     break
-                page = [r[0] for r in rows]
                 last = page[-1]
                 groups = load_groups(cur, page)
                 plans, conflicts = plan_deletions(groups)
@@ -356,7 +411,7 @@ def main():
             remaining = cur.fetchone()[0]
             print("=" * 66)
             print(f"Rows merged:       {total_merged}")
-            print(f"Conflicts skipped: {total_conflicts}")
+            print(f"Conflicting groups (partially merged): {total_conflicts}")
             print(f"Questions live:    {remaining}")
             print("=" * 66)
 

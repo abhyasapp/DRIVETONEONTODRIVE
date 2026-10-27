@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-export_any_level.py  (final)
-----------------------------
+export_any_level.py  (v2)
+-------------------------
 Exports classified questions to JSON, one subtopic per folder.
+
+Part splitting: by default each question keeps its part across runs via
+stable hash of its DB id, so adding/removing one question only rewrites
+the files that question actually lands in — everything else re-uploads
+unchanged.Use --sequential-parts for the old 1..50 slice behaviour.
 
 Layout on disk:
 
@@ -27,6 +32,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -63,12 +69,46 @@ def build_question(new_number, q_text, options, correct_idx, explanation, images
     item = {
         "q": f"{new_number}. {body}",
         "options": list(options or []),
-        "correct": correct_idx if correct_idx is not None else 0,
+        # unanswered stays null (never pretend option A is correct).
+        # Default export filters these out -- only --include-unanswered
+        # can produce a null here.
+        "correct": correct_idx,
         "explain": explanation or "",
     }
     if images:
         item["images"] = images
     return item
+
+
+def _qid_hash(qid):
+    """Deterministic 0..2^31-1 hash of a question id."""
+    return int(hashlib.md5(str(qid).encode("utf-8")).hexdigest()[:8], 16)
+
+
+def partition_items(items, max_per_file, stable=True):
+    """
+    Split a subtopic's ordered items into file payloads.
+
+    stable=True: every item's part is (hash(qid) % n_parts), so a question
+    keeps its file across runs as long as the file count itself doesn't
+    change. Parts may be uneven; an unlucky empty part falls back to the
+    sequential slice.
+
+    stable=False: classic sequential chunking (part 1 = first 50, ...).
+    """
+    n = len(items)
+    if n == 0:
+        return []
+    if n <= max_per_file:
+        return [items]
+    n_parts = (n + max_per_file - 1) // max_per_file
+    if stable:
+        buckets = [[] for _ in range(n_parts)]
+        for item in items:
+            buckets[_qid_hash(item[0]) % n_parts].append(item)
+        if all(buckets):
+            return buckets
+    return [items[i:i + max_per_file] for i in range(0, n, max_per_file)]
 
 
 def atomic_write_json(path, payload):
@@ -173,7 +213,8 @@ def group_rows(rows):
 
 # ── export ───────────────────────────────────────────────────────────────
 
-def export_level(cur, level_key, include_unanswered, dry_run):
+def export_level(cur, level_key, include_unanswered, dry_run,
+                 sequential_parts=False):
     cur.execute("SELECT id, label FROM levels WHERE level_key = %s", (level_key,))
     row = cur.fetchone()
     if not row:
@@ -224,11 +265,11 @@ def export_level(cur, level_key, include_unanswered, dry_run):
                 items = sub["items"]
                 if not items:
                     continue
-                chunks = [items[i:i + MAX_PER_FILE]
-                          for i in range(0, len(items), MAX_PER_FILE)]
+                chunks = partition_items(items, MAX_PER_FILE,
+                                         stable=not sequential_parts)
                 n_parts = len(chunks)
 
-                                # every subtopic gets its own folder: "<code> <title>"
+                # every subtopic gets its own folder: "<code> <title>"
                 sub_dir_name = safe_filename(f"{code} {sub['title']}")
                 sub_dir = os.path.join(ch_dir, sub_dir_name)
                 os.makedirs(sub_dir, exist_ok=True)
@@ -271,6 +312,9 @@ def parse_args():
     p = argparse.ArgumentParser(description="Export classified questions.")
     p.add_argument("target", help="level_key or 'all'")
     p.add_argument("--include-unanswered", action="store_true")
+    p.add_argument("--sequential-parts", action="store_true",
+                   help="Use old sequential 1..50 chunking instead of "
+                        "stable per-question part assignment.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -294,19 +338,26 @@ def main():
 
     start = time.time()
     total_files = total_q = 0
+    failed_levels = []
     for lv in levels:
         try:
-            f, q = export_level(cur, lv, args.include_unanswered, args.dry_run)
+            f, q = export_level(cur, lv, args.include_unanswered, args.dry_run,
+                                sequential_parts=args.sequential_parts)
             total_files += f
             total_q += q
         except Exception as e:
             print(f"  {lv}: FAILED — {type(e).__name__}: {e}")
+            failed_levels.append(lv)
 
     cur.close()
     conn.close()
     print()
     print(f"Total: {total_files} file(s), {total_q} question(s), "
           f"{time.time() - start:.1f}s")
+
+    if failed_levels:
+        print("FAILED levels: " + ", ".join(failed_levels))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

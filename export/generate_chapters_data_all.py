@@ -63,31 +63,39 @@ def next_two_prefixes(real_codes):
     return mp, op
 
 
+_BOOK_CANON = {
+    # normalized(book_name) -> display label. ONLY exact matches collapse,
+    # so genuinely different books ('D PARSAD old book' vs 'DPARSAD') keep
+    # distinct app labels instead of colliding as 'DPARSAD' + '(2)'.
+    "dparsad":     "DPARSAD",
+    "d parsad":    "DPARSAD",
+    "d p parsad":  "DPARSAD",
+    "rk shrestha": "RK SHRESTHA",
+    "sunil":       "Sunil Sah",
+    "sunil sah":   "Sunil Sah",
+    "gate":        "GATE",
+    "saarc":       "SAARC",
+}
+
+
 def canon_book(name):
     """
-    Map messy book_name values onto a small set of canonical labels.
-
-    DB reality: 'DPARSAD', 'dparsad', 'D PARSAD', 'D parsad old book',
-    'D PARSAD (new)' all mean the same book. Same for 'RK SHRESTHA' vs
-    'Rk shrestha', 'Sunil Sah' vs 'sunil' vs 'Sunil', etc.
+    Map messy book_name variants onto canonical labels — but only exact
+    case/punctuation variants of the same name collapse. 'dparsad' and
+    'd parsad' both become 'DPARSAD'; 'D parsad old book' stays itself.
 
     Anything not recognized is returned as-is (stripped).
     """
+    if not name:
+        return "unknown"
     n = (name or "").strip().lower()
     n = n.replace(".", " ").replace("_", " ").replace("-", " ")
     n = " ".join(n.split())
 
-    if "parsad" in n or "prasad" in n:
-        return "DPARSAD"
-    if "shrestha" in n or "sherestha" in n:
-        return "RK SHRESTHA"
-    if "sunil" in n:
-        return "Sunil Sah"
-    if "gate" in n:
-        return "GATE"
-    if "saarc" in n:
-        return "SAARC"
-    return name.strip() if name else "unknown"
+    hit = _BOOK_CANON.get(n)
+    if hit:
+        return hit
+    return name.strip()
 
 
 # ── Original-Questions label helpers ───────────────────────────────────

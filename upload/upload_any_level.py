@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-upload_any_level.py  (v3 — cloud-ready)
+upload_any_level.py  (v4 — cloud-ready)
 ---------------------------------------
 Uploads abhyas_export/ to Google Drive, preserving the subtopic
 sub-folder structure and file IDs across runs.
@@ -22,6 +22,12 @@ Handles:
   • prune pass: after scanning the local tree, any export_files row for
     this level whose (subtopic_id, source_label, part_number) is not
     present locally is deleted, and its Drive file is trashed.
+    SAFETY: the prune pass is SKIPPED for a level whenever any local file
+    could not be mapped to a DB subtopic (code not found) — otherwise a
+    late/changed classification would make good rows look stale and get
+    good Drive files trashed.
+  • exit code: non-zero when any level fails, or any single file fails
+    to upload (never exits 0 silently).
 
 Usage:
     python upload_any_level.py all
@@ -386,17 +392,18 @@ def prune_stale(cur, conn, level_id, level_key, want_keys,
 
 def upload_level(cur, conn, level_key, level_label, workers, dry_run,
                  prune=True, prune_only=False):
+    """Returns the number of failures for this level (0 = all good)."""
     print(f"  {level_key}: starting")
     level_path = os.path.join(LOCAL_ROOT, level_label)
     if not os.path.isdir(level_path):
         print(f"  {level_key}: no local folder ({level_path}), skipping")
-        return
+        return 0
 
     cur.execute("SELECT id FROM levels WHERE level_key = %s", (level_key,))
     row = cur.fetchone()
     if not row:
         print(f"  {level_key}: not in DB, skipping")
-        return
+        return 0
     level_id = row[0]
 
     # ── chapter folders on disk ───────────────────────────────────────
@@ -462,6 +469,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
 
     # ── local file discovery ──────────────────────────────────────────
     local_files = []
+    unmapped = []       # files whose (chapter, code) is not in the DB
     for ch_key, (ch_folder_name, ch_path) in chapter_folders.items():
         for entry in sorted(os.listdir(ch_path)):
             sub_path = os.path.join(ch_path, entry)
@@ -480,6 +488,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
                         continue
                     subtopic_id = code_to_id.get((ch_key, parsed["code"]))
                     if not subtopic_id:
+                        unmapped.append((fname, ch_key, parsed["code"]))
                         continue
                     local_files.append({
                         "path": fpath, "fname": fname, "ch_key": ch_key,
@@ -498,6 +507,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
                     continue
                 subtopic_id = code_to_id.get((ch_key, parsed["code"]))
                 if not subtopic_id:
+                    unmapped.append((entry, ch_key, parsed["code"]))
                     continue
                 local_files.append({
                     "path": fpath, "fname": entry, "ch_key": ch_key,
@@ -506,6 +516,15 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
                     "source": parsed["source"],
                     "part": parsed["part"],
                 })
+
+    if unmapped:
+        print(f"  {level_key}: WARNING {len(unmapped)} local file(s) not mapped "
+              f"to a DB subtopic (first: {unmapped[0][0]!r} code "
+              f"{unmapped[0][2]!r} of chapter {unmapped[0][1]!r})")
+        if prune:
+            print(f"  {level_key}: prune SKIPPED to avoid trashing good rows "
+                  f"— re-export / re-sync first, or use --no-prune explicitly")
+            prune = False
 
     # ── set of keys that *should* exist for this level ────────────────
     want_keys = {
@@ -524,6 +543,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
         return
 
     # ── parallel hashing ──────────────────────────────────────────────
+    failures = 0
     hashes = {}
     with ThreadPoolExecutor(max_workers=HASH_WORKERS) as pool:
         futs = {pool.submit(sha256_of, lf["path"]): lf["path"]
@@ -535,6 +555,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
             except Exception as e:
                 print(f"    hash error {p}: {e}")
                 hashes[p] = None
+                failures += 1
 
     # ── build tasks ───────────────────────────────────────────────────
     tasks = []
@@ -543,13 +564,16 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
     for lf in local_files:
         new_hash = hashes.get(lf["path"])
         if new_hash is None:
-            continue
+            continue          # hash failure already counted in `failures`
 
         if lf["sub_code"] is not None:
             target_folder_id = sub_parent_ids.get((lf["ch_key"], lf["sub_code"]))
         else:
             target_folder_id = ch_parent_ids[lf["ch_key"]]
         if not target_folder_id:
+            print(f"    ERROR {lf['fname']}: no Drive folder for "
+                  f"chapter {lf['ch_key']} / {lf['sub_code']}")
+            failures += 1
             continue
 
         key = (lf["subtopic_id"], lf["source"] or "", lf["part"])
@@ -578,7 +602,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
             if prune_stats["failed"]:
                 parts.append(f"{prune_stats['failed']} prune-errors")
         print(f"  {level_key}: " + ", ".join(parts))
-        return
+        return failures
 
     print(f"  {level_key}: {len(tasks)} to upload, {skipped} unchanged")
     if dry_run:
@@ -587,7 +611,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
             print(f"    [{action}] {t[1]}")
         if len(tasks) > 10:
             print(f"    ... and {len(tasks) - 10} more")
-        return
+        return 0
 
     results = [None] * len(tasks)
     done = 0
@@ -639,6 +663,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
         if prune_stats["failed"]:
             parts.append(f"{prune_stats['failed']} prune-errors")
     print(f"  {level_key}: " + ", ".join(parts))
+    return failures + errors
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -682,6 +707,7 @@ def main():
     prune_only = args.prune_only
 
     start = time.time()
+    failed_levels = []
     for lv in levels:
         try:
             cur.execute("SELECT label FROM levels WHERE level_key = %s", (lv,))
@@ -689,14 +715,22 @@ def main():
             if not row:
                 print(f"  {lv}: not found in DB, skipping")
                 continue
-            upload_level(cur, conn, lv, row[0], args.workers, args.dry_run,
-                         prune=prune, prune_only=prune_only)
+            n_failed = upload_level(cur, conn, lv, row[0], args.workers,
+                                    args.dry_run,
+                                    prune=prune, prune_only=prune_only)
+            if n_failed:
+                failed_levels.append(f"{lv} ({n_failed} error(s))")
         except Exception as e:
             print(f"  {lv}: FAILED — {type(e).__name__}: {e}")
             conn.rollback()
+            failed_levels.append(f"{lv} ({type(e).__name__})")
 
     cur.close(); conn.close()
     print(f"\nDone in {time.time() - start:.1f}s")
+
+    if failed_levels:
+        print("FAILED levels: " + ", ".join(failed_levels))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ env/
 service-account.json
 oauth-credentials.json
 oauth-token.pickle
+*.pickle          # any pickled credential, not just the oauth one
 token.json
 *.pem
 *.key
@@ -95,3 +96,7 @@ temp/
 node_modules/
 npm-debug.log*
 yarn-error.log*
+# extra safety (added 2026-10)
+.venv*/
+venv*/
+~$*

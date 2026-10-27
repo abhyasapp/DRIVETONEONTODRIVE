@@ -174,6 +174,10 @@ def main():
     print(f"Level '{level_key}': {len(questions)} questions to classify "
           f"({workers} workers).\n")
 
+    # O(1) question-id -> chapter lookup (the old next()-scan was O(n^2)
+    # over ~13k questions, ~85M tuple comparisons per run).
+    q_chapter = {qid: ch_key for qid, ch_key, _ in questions}
+
     if not questions:
         print("Nothing to do.")
         cur.close(); conn.close()
@@ -212,7 +216,7 @@ def main():
         if not sub_id:
             continue
         rows.append((qid, sub_id, score, Json(hits), "auto"))
-        ch_key = next((q[1] for q in questions if q[0] == qid), None)
+        ch_key = q_chapter.get(qid)
         per_chapter.setdefault(ch_key, {"class": 0, "unclass": 0})
         if was_classified:
             classified += 1

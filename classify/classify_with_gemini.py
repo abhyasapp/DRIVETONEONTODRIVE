@@ -1191,9 +1191,18 @@ def process_level(level_key, pool, db, retry_deferred):
     db.execute("""
         SELECT id, chapter_key, chapter_name
         FROM chapters WHERE level_id = %s
-        ORDER BY chapter_key::numeric
     """, (level_id,))
-    chapters = db.fetchall()
+
+    # Python-side numeric sort: chapter_key::numeric in SQL would raise on
+    # any non-numeric chapter key and abort the whole level.
+    def _ch_order(r):
+        key = r[1] or ""
+        try:
+            return (0, [int(p) for p in key.split(".")])
+        except ValueError:
+            return (1, str(key))
+
+    chapters = sorted(db.fetchall(), key=_ch_order)
 
     total_classified = 0
     total_deferred = 0

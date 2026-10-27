@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_pipeline.py  (v6.4 - non-fatal steps, upload fatal, v7 dedupe)
+run_pipeline.py  (v6.5 - strict failure reporting, v9 dedupe)
 -------------------------------------------------------------------
 Daily pipeline: sync -> corrections -> dedupe -> classify -> export -> upload -> chapters
 
@@ -18,10 +18,10 @@ Steps (11):
   11. chapters_up  upload_chapters_data.py
 
 Behaviour:
-  * Exit code is NON-ZERO if pre-flight fails, dedupe aborts, or a
-    FATAL_STEPS member (dedupe / upload) fails. Non-fatal failures
-    (corrections, kw_*, gemini, export, chapters) are logged in the
-    SUMMARY but do not turn the run red.
+  * Exit code is NON-ZERO if pre-flight fails or a FATAL_STEPS member
+    (dedupe / export / upload) fails. Non-fatal failures (corrections,
+    kw_*, gemini, chapters) are logged in the SUMMARY but do not turn
+    the run red.
   * --quiet still prints the last lines of any failing step (tracebacks).
   * Optional steps are skipped cleanly when their script is missing.
   * UTF-8 safe.
@@ -111,7 +111,7 @@ STEPS = [
     ("corrections", "Apply corrections to Neon",
      "sync.apply_corrections", ["--apply"],                  600),
     # v7 dedupe: no --no-near flag (removed in v7, run near-diff via --samples)
-    ("dedupe",      "Exact dedupe (content identity)",
+    ("dedupe",      "Exact dedupe (content identity, per chapter, v9)",
      "dedupe.dedupe_exact", ["--apply", "--quiet"],           900),
     ("kw_l5",       "Keyword classify level5",
      "classify.classify_any_level", ["level5"],                  600),
@@ -121,7 +121,7 @@ STEPS = [
      "classify.classify_any_level", ["gk"],                      600),
     ("gemini",      "Gemini classify",
      "classify.classify_with_gemini", ["all"],       GEMINI_TIMEOUT),
-    ("export",      "Export to JSON",
+    ("export",      "Export to JSON (stable parts)",
      "export.export_any_level", ["all"],                       900),
     ("upload",      "Upload JSON to Drive",
      "upload.upload_any_level", ["all", "--workers", "6"],    1800),
@@ -138,11 +138,13 @@ PARALLEL_PREFIX = "kw_"
 # logged in the SUMMARY but do not fail CI.
 #   - dedupe: pool integrity. If we ship an un-deduped pool, downstream
 #     classify/export operate on garbage.
+#   - export: if export fails but upload succeeds, Drive keeps serving
+#     yesterday's questions — silent divergence. Must fail loudly.
 #   - upload: if Drive upload fails, the app keeps serving yesterday's
 #     JSON while Neon moved on — silent divergence. Must fail loudly.
 # Add "sync" here if you want a Drive outage to red the run (arguably
 # correct: with sync failed, the pipeline re-exports stale Neon data).
-FATAL_STEPS = {"dedupe", "upload"}
+FATAL_STEPS = {"dedupe", "export", "upload"}
 
 # Steps that must NOT be retried automatically.
 NO_RETRY_STEPS = {"gemini", "upload", "corrections"}
