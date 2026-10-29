@@ -22,15 +22,19 @@ env/
 .env.*
 !.env.example
 .env.local
-
-service-account.json
+service-account*.json
 oauth-credentials.json
+oauth-credentials*.json
 oauth-token.pickle
 *.pickle          # any pickled credential, not just the oauth one
 token.json
+client_secret*.json
 *.pem
 *.key
 credentials.json
+.envrc
+.secrets/
+
 
 # ─── Runtime logs ───────────────────────────────────────
 logs/

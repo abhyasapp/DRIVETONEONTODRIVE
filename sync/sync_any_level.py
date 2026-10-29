@@ -71,6 +71,11 @@ from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 
 from utils.db import connect as db_connect
+from dedupe.content_identity import (
+    IDENTITY_VERSION, identity as content_identity, legacy_identity,
+    source_question_key, source_location_key, compute_quality_score,
+)
+from dedupe.source_aliases import ensure_correction_source_alias_schema
 
 
 # ============================================================================
@@ -497,9 +502,16 @@ def ensure_schema(cur, conn):
         "ALTER TABLE files ADD COLUMN IF NOT EXISTS drive_md5 TEXT",
         "ALTER TABLE files ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ",
         "CREATE INDEX IF NOT EXISTS idx_files_file_id ON files(file_id)",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS identity_key TEXT",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS identity_version SMALLINT",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS source_identity TEXT",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS source_question_key TEXT",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS corrected_at TIMESTAMPTZ",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS quality_score REAL DEFAULT 0",
     ]
     for s in stmts:
         cur.execute(s)
+    ensure_correction_source_alias_schema(cur)
     conn.commit()
 
 
@@ -511,6 +523,12 @@ def delete_questions_for_file(cur, file_ref_id):
     cur.execute("""
         UPDATE questions SET canonical_id = NULL
         WHERE canonical_id IN (
+            SELECT id FROM questions WHERE file_ref_id = %s
+        )
+    """, (file_ref_id,))
+    cur.execute("""
+        DELETE FROM question_subtopics
+        WHERE question_id IN (
             SELECT id FROM questions WHERE file_ref_id = %s
         )
     """, (file_ref_id,))
@@ -594,8 +612,6 @@ def insert_questions(cur, file_ref_id, data):
     if not isinstance(data, list):
         raise ValueError("not a list")
 
-    delete_questions_for_file(cur, file_ref_id)
-
     q_rows = []
     for item in data:
         if not isinstance(item, dict):
@@ -624,45 +640,263 @@ def insert_questions(cur, file_ref_id, data):
 
         raw_clean = _strip_images_from_raw(item)
 
-        q_rows.append((
-            file_ref_id, q_num, q_text, Json(options),
-            correct_idx, correct_txt, explain, Json(raw_clean),
-            images,
-        ))
+        q_rows.append({
+            "file_ref_id": file_ref_id, "question_number": q_num,
+            "question_text": q_text, "options": options,
+            "correct_index": correct_idx, "correct_text": correct_txt,
+            "explanation": explain, "raw": Json(raw_clean), "images": images,
+            "identity_key": content_identity(q_text, options),
+            "source_question_key": source_question_key(q_num, q_text, options),
+            "source_identity": content_identity(q_text, options),
+            "source_location": None,
+            "quality_score": compute_quality_score(explain, options, len(q_text)),
+            "corrected_at": None,
+        })
 
     if not q_rows:
-        return 0, 0
+        raise ValueError("source file contains no valid question objects; preserving existing rows")
 
-    values = [row[:8] for row in q_rows]
-    result = execute_values(
-        cur,
-        """
-        INSERT INTO questions
-            (file_ref_id, question_number, question_text, options,
-             correct_index, correct_text, explanation, raw)
-        VALUES %s
-        RETURNING id
-        """,
-        values, page_size=500, fetch=True,
-    )
-    qids = [row[0] for row in result]
+    cur.execute("""
+        SELECT c.id FROM files f JOIN books b ON b.id=f.book_id
+        JOIN chapters c ON c.id=b.chapter_id WHERE f.id=%s
+    """, (file_ref_id,))
+    chapter_row = cur.fetchone()
+    if not chapter_row:
+        raise ValueError(f"file {file_ref_id} has no chapter")
+    chapter_id = chapter_row[0]
+    cur.execute("""SELECT b.book_name,f.subtopic FROM files f
+        JOIN books b ON b.id=f.book_id WHERE f.id=%s""", (file_ref_id,))
+    source_path = cur.fetchone()
+    if not source_path:
+        raise ValueError(f"file {file_ref_id} has no source location")
+    source_location = source_location_key(*source_path)
+    cur.execute("""SELECT alias_id,source_identity,source_number,question_text,options,
+        correct_index,correct_text,explanation,identity_key,quality_score,corrected_at
+        FROM correction_source_aliases_v2
+        WHERE chapter_id=%s AND source_location=%s
+        ORDER BY corrected_at DESC,alias_id DESC""", (chapter_id, source_location))
+    aliases_by_source = {}
+    for alias_row in cur.fetchall():
+
+        # Numbered source questions remain identifiable when their wording or
+        # options change. Source identity is also indexed as a fallback when a
+        # later import changes the printed question number.
+        alias_record = (alias_row[1],) + alias_row[3:]
+        if alias_row[2]:
+            aliases_by_source.setdefault(("n", str(alias_row[2])), alias_record)
+        if alias_row[1]:
+            aliases_by_source.setdefault(("i", alias_row[1]), alias_record)
+
+    # Adopted edits predating correction_source_aliases lived in a transient-ID
+    # table. Read those legacy rows once and migrate them into this same stable
+    # source-key map; the table is optional on older databases.
+    cur.execute("SELECT to_regclass('review_correction_overrides')")
+    if cur.fetchone()[0]:
+        cur.execute("""SELECT q.question_number,q.source_question_key,q.raw,
+                o.source_identity,o.question_text,o.options,o.correct_index,
+                o.correct_text,o.explanation,o.updated_at
+            FROM review_correction_overrides o
+            JOIN questions q ON q.id=o.question_id
+            WHERE q.file_ref_id=%s
+            ORDER BY o.updated_at DESC,o.question_id DESC""", (file_ref_id,))
+        for old in cur.fetchall():
+            number, source_key, raw, source_id, text, options, correct_index, correct_text, explanation, updated_at = old
+            raw = raw if isinstance(raw, dict) else {}
+            source_number = str(number or "")
+            if not source_number and source_key and source_key.startswith("n:"):
+                source_number = source_key[2:]
+            options = options or []
+            identity_alias = (
+                source_id, text, options, correct_index, correct_text, explanation,
+                content_identity(text, options),
+                compute_quality_score(explanation, options, len(str(text or ""))),
+                updated_at,
+            )
+            for alias_key in (("n", source_number), ("i", source_id)):
+                if alias_key[1]:
+                    aliases_by_source.setdefault(alias_key, identity_alias)
+
+    for row in q_rows:
+        row["source_location"] = source_location
+        source_number = str(row["question_number"] or "")
+        source_ids = (row["source_identity"], legacy_identity(row["question_text"], row["options"]))
+        alias_record = aliases_by_source.get(("n", source_number)) if source_number else None
+        if alias_record is None:
+            alias_record = next((aliases_by_source.get(("i", source_id))
+                                 for source_id in dict.fromkeys(source_ids)
+                                 if aliases_by_source.get(("i", source_id))), None)
+        alias_values = alias_record[1:] if alias_record else None
+        if alias_values:
+            (row["question_text"], row["options"], row["correct_index"],
+             row["correct_text"], row["explanation"], row["identity_key"],
+             row["quality_score"], row["corrected_at"]) = alias_values
+            row["identity_key"] = content_identity(row["question_text"], row["options"])
+    cur.execute("""SELECT id,source_question_key,corrected_at,question_number,raw,
+        source_identity,question_text,options,correct_index,correct_text,explanation,
+        quality_score,identity_key FROM questions WHERE file_ref_id=%s ORDER BY id""", (file_ref_id,))
+
+
+    existing = cur.fetchall()
+    by_source = {}
+    old_keys = {}
+    for existing_row in existing:
+        old_id, source_key, corrected_at, old_num, old_raw, old_source_identity = existing_row[:6]
+        old_raw = old_raw if isinstance(old_raw, dict) else {}
+        old_num_from_raw, old_text = extract_num_text(old_raw.get("q", ""))
+        old_text = old_text or ""
+        old_num = old_num if old_num is not None else old_num_from_raw
+        old_options = old_raw.get("options") or []
+        source_key = source_key or source_question_key(old_num, old_text, old_options)
+        if old_num is not None:
+            old_source_key = source_question_key(old_num, old_text, old_options)
+            if old_source_key != source_key:
+                by_source.setdefault(old_source_key, []).append(old_id)
+        old_keys[old_id] = source_key
+        by_source.setdefault(source_key, []).append(old_id)
+
+    cur.execute("SELECT to_regclass('dedupe_source_tombstones')")
+    tombstone_table_exists = cur.fetchone()[0] is not None
+    tombstoned_sources = set()
+    if tombstone_table_exists:
+        cur.execute("""SELECT source_question_key,identity_key
+            FROM dedupe_source_tombstones WHERE file_ref_id=%s""", (file_ref_id,))
+        tombstoned_sources = {(str(source_key), str(identity_key))
+                              for source_key, identity_key in cur.fetchall()}
+
+    row_ids = []
+    insert_rows = []
+    insert_positions = []
+    matched_existing = set()
+    for row in q_rows:
+        # An exact duplicate can be one of several repeated rows sharing the
+        # same number-based source key. Keep the existing keeper matched first;
+        # tombstones are only consulted when this imported item would otherwise
+        # be recreated as a new row.
+        matches = [qid for qid in by_source.get(row["source_question_key"], [])
+                   if qid not in matched_existing]
+        if not matches:
+            old_key = source_question_key(
+                row["question_number"], row["question_text"], row["options"])
+            matches = [qid for qid in by_source.get(old_key, [])
+                       if qid not in matched_existing]
+        tombstone_key = (row["source_question_key"], row["identity_key"])
+        source_tombstone_key = (row["source_question_key"], row["source_identity"])
+        tombstone_source = (tombstone_key in tombstoned_sources
+                            or source_tombstone_key in tombstoned_sources)
+        if not matches and tombstone_source:
+            row_ids.append(None)
+            continue
+        if tombstone_table_exists and not tombstone_source:
+            cur.execute("""DELETE FROM dedupe_source_tombstones
+                WHERE file_ref_id=%s AND source_question_key=%s
+                  AND identity_key<>%s""",
+                (file_ref_id,row["source_question_key"],row["identity_key"]))
+        # For unnumbered rows the content hash is the identity; numbered rows
+        # use their stable source number even when the content has changed.
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous existing source identity {row['source_question_key']!r}")
+        if matches:
+            qid = matches[0]
+            matched_existing.add(qid)
+            old_row = next((existing_row for existing_row in existing if existing_row[0] == qid), None)
+            old_raw = old_row[4] if old_row and isinstance(old_row[4], dict) else {}
+            old_text = extract_num_text(old_raw.get("q", ""))[1] or ""
+            was_manually_corrected = old_row is not None and old_row[2] is not None
+            if row["corrected_at"] is not None:
+                # An adopted correction alias is authoritative even if source text
+                # changed since the correction; do not let an old Drive revision
+                # replace the already-reviewed content.
+                cur.execute("""UPDATE questions SET file_ref_id=%s,question_number=%s,
+                    raw=%s,source_question_key=%s,source_identity=COALESCE(source_identity,%s),
+                    question_text=%s,options=%s,correct_index=%s,correct_text=%s,
+                    explanation=%s,identity_key=%s,quality_score=%s,identity_version=%s,
+                    corrected_at=%s WHERE id=%s""",
+                    (file_ref_id,row["question_number"],row["raw"],row["source_question_key"],
+                     row["source_identity"],row["question_text"],Json(row["options"]),
+                     row["correct_index"],row["correct_text"],row["explanation"],
+                     row["identity_key"],row["quality_score"],IDENTITY_VERSION,
+                     row["corrected_at"],qid))
+            else:
+                same_source = (old_text == row["question_text"]
+                               and (old_raw.get("options") or []) == row["options"])
+                preserve_existing = was_manually_corrected and same_source
+                if preserve_existing:
+                    qtext, options, correct_index, correct_text, explanation = old_row[6:11]
+                    quality = old_row[11]
+                    identity_key = old_row[12] or row["identity_key"]
+                    cur.execute("""UPDATE questions SET file_ref_id=%s,question_number=%s,
+                        raw=%s,source_question_key=%s,source_identity=COALESCE(source_identity,%s),
+                        identity_key=%s,quality_score=%s,identity_version=%s
+                        WHERE id=%s""", (file_ref_id,row["question_number"],row["raw"],
+                        row["source_question_key"],row["source_identity"],
+                        identity_key,quality or row["quality_score"],IDENTITY_VERSION,qid))
+                    row["question_text"], row["options"] = qtext, options
+                    row["correct_index"], row["correct_text"] = correct_index, correct_text
+                    row["explanation"], row["identity_key"] = explanation, identity_key
+                    row["quality_score"] = quality or row["quality_score"]
+                    row["corrected_at"] = old_row[2]
+                else:
+                    cur.execute("""UPDATE questions SET file_ref_id=%s,question_number=%s,
+                        raw=%s,source_question_key=%s,source_identity=%s,
+                        question_text=%s,options=%s,correct_index=%s,correct_text=%s,
+                        explanation=COALESCE(%s,explanation),identity_key=%s,
+                        quality_score=%s,identity_version=%s,corrected_at=NULL
+                        WHERE id=%s""", (file_ref_id,row["question_number"],row["raw"],
+                        row["source_question_key"],row["source_identity"],
+                        row["question_text"],Json(row["options"]),
+                        row["correct_index"],row["correct_text"],row["explanation"],
+                        row["identity_key"],row["quality_score"],IDENTITY_VERSION,qid))
+            row_ids.append(qid)
+        else:
+            row_ids.append(None)
+            insert_positions.append(len(row_ids)-1)
+            insert_rows.append(row)
+
+    # Do not interpret an empty/invalid source file as an intentional delete.
+    # An explicit empty question list may delete; malformed files are rejected above.
+    current_old_ids = {row[0] for row in existing}
+    stale_ids = list(current_old_ids - matched_existing - {qid for qid in row_ids if qid is not None})
+    if stale_ids:
+        cur.execute("UPDATE questions SET canonical_id=NULL WHERE canonical_id=ANY(%s)",
+                    (stale_ids,))
+        cur.execute("DELETE FROM question_subtopics WHERE question_id=ANY(%s)", (stale_ids,))
+        cur.execute("DELETE FROM question_images WHERE question_id=ANY(%s)", (stale_ids,))
+        cur.execute("DELETE FROM questions WHERE id=ANY(%s)", (stale_ids,))
+
+    if insert_rows:
+        values = [(row["file_ref_id"],row["question_number"],row["question_text"],
+            Json(row["options"]),row["correct_index"],row["correct_text"],
+            row["explanation"],row["raw"],row["identity_key"],
+            row["source_question_key"],row["source_identity"],
+            row["quality_score"],row["corrected_at"],IDENTITY_VERSION)
+            for row in insert_rows]
+        result = execute_values(cur,"""INSERT INTO questions
+            (file_ref_id,question_number,question_text,options,correct_index,
+             correct_text,explanation,raw,identity_key,source_question_key,
+             source_identity,quality_score,corrected_at,identity_version) VALUES %s RETURNING id""",values,
+            template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",page_size=500,fetch=True)
+        for position, inserted in zip(insert_positions, result):
+            row_ids[position] = inserted[0]
 
     image_rows = []
-    for qid, row in zip(qids, q_rows):
-        for pos, (mime, b64) in enumerate(row[8]):
-            image_rows.append((qid, mime, b64, pos))
+    image_refresh_ids = []
+    for qid, row in zip(row_ids, q_rows):
+        if qid is None:
+            continue
+        for pos, (mime, b64) in enumerate(row["images"]):
+            image_rows.append((qid,mime,b64,pos))
+        if row["images"] or row["corrected_at"] is None or not any(
+                existing_row[0] == qid and existing_row[2] is not None for existing_row in existing):
+            image_refresh_ids.append(qid)
+    if image_refresh_ids:
+        cur.execute("DELETE FROM question_images WHERE question_id=ANY(%s)", (image_refresh_ids,))
     if image_rows:
-        execute_values(
-            cur,
-            """
-            INSERT INTO question_images
-                (question_id, mime_type, data_base64, position)
-            VALUES %s
-            """,
-            image_rows, page_size=500,
-        )
 
-    return len(q_rows), len(image_rows)
+        execute_values(cur,"""INSERT INTO question_images
+            (question_id,mime_type,data_base64,position) VALUES %s""",
+            image_rows,template="(%s,%s,%s,%s)",page_size=500)
+    return len(q_rows),len(image_rows)
+
 
 
 # ============================================================================

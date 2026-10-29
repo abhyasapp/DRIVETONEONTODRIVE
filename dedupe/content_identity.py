@@ -67,9 +67,60 @@ def _sorted_options(options):
     return tuple(sorted(_canonical(o) for o in options))
 
 
+def _strip_question_number(stem):
+    text = str(stem or "")
+    match = re.match(r"^\s*\d+\s*[.)]\s*", text)
+    return text[match.end():] if match else text
+
+
+def legacy_identity(stem, options):
+    """Return the pre-v2 identity hash for safe one-time migration/matching."""
+    # Preserve compatibility with the old content identity, which hashed the
+    # stopword-stripped words without removing a leading printed question number.
+    payload = {"cw": sorted(content_words(stem)), "opts": _sorted_options(options)}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def source_question_key(question_number, stem, options):
+    """Stable source key; source number is authoritative when it exists.
+
+    Text and choices often change after a correction is adopted. Including a
+    content hash in a numbered key would prevent the same source item from
+    matching its adopted edit on the next sync.
+    """
+    number = str(question_number).strip() if question_number is not None else ""
+    if number:
+        return f"n:{number}"
+    return f"i:{legacy_identity(_strip_question_number(stem), options)}"
+
+
+def source_location_key(book_name, subtopic):
+    """Stable source-file scope, independent of a rotating Drive file ID."""
+    payload = [_canonical(book_name), _canonical(subtopic)]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+IDENTITY_VERSION = 2
+
+
 def identity(stem, options):
+    """High-precision exact identity; fuzzy variants go to human review.
+
+    The old identity used a set of stopword-stripped stem words, so word order
+    and repetition vanished (for example, two different statements could hash
+    as identical). Canonical full text preserves meaning-bearing order while
+    remaining insensitive to case, Unicode punctuation and whitespace.
+    Options remain an unordered canonical set to tolerate source option order;
+    answer agreement is checked independently before merge.
+    """
+    canonical_stem = _canonical(_strip_question_number(stem))
+    canonical_stem = re.sub(r"\s+([,.;:!?%])", r"\1", canonical_stem)
     payload = {
-        "cw":   sorted(content_words(stem)),
+        "stem": canonical_stem,
         "opts": _sorted_options(options),
     }
     return hashlib.sha256(
@@ -79,6 +130,28 @@ def identity(stem, options):
 
 def canonical_answer(s):
     return _canonical(s).replace(" ", "")
+
+
+def answer_identity(correct_text=None, correct_index=None, options=None):
+    """Return a verified canonical answer, or a sentinel for unsafe answer data."""
+    has_text = correct_text is not None and bool(str(correct_text).strip())
+    has_index = correct_index is not None
+    valid_index = (
+        isinstance(correct_index, int) and not isinstance(correct_index, bool)
+        and isinstance(options, (list, tuple))
+        and 0 <= correct_index < len(options)
+    )
+    if has_index and not valid_index:
+        return "__answer_conflict__"
+    indexed_answer = canonical_answer(options[correct_index]) if valid_index else None
+    if has_text:
+        text_answer = canonical_answer(correct_text)
+        if indexed_answer is not None and text_answer != indexed_answer:
+            return "__answer_conflict__"
+        return text_answer
+    if indexed_answer is not None:
+        return indexed_answer
+    return "__unanswered__"
 
 
 def compute_quality_score(explanation, options, text_len):
