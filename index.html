@@ -316,17 +316,21 @@
     if (!state.endpoint) throw new Error('Not connected to a database.');
     let response;
     try {
+      // No Content-Type header on purpose: Neon's preflight allows only its own
+      // Neon-* headers, and `application/json` is not a CORS-safelisted value,
+      // so Chrome would refuse the request before sending it ("Failed to fetch").
+      // A JSON string body is sent as text/plain, which is safelisted; the
+      // endpoint parses the body regardless of content type.
       response = await fetch(state.endpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           'Neon-Connection-String': state.dsn,
           'Neon-Array-Mode': 'true'
         },
         body: JSON.stringify({ query, params })
       });
     } catch (error) {
-      throw new Error(`Could not reach the database endpoint (${error.message}). The browser console needs a Neon connection string.`);
+      throw new Error(`Could not reach ${state.endpoint} (${error.message}). The request never reached Neon: check the host in the connection string, and that no extension or network proxy is blocking it.`);
     }
     const text = await response.text();
     let payload;
