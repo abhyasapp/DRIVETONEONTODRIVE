@@ -104,3 +104,7 @@ yarn-error.log*
 .venv*/
 venv*/
 ~$*
+
+# ─── Local test scratch (PGlite install for tests/test_admin_sql.mjs) ───
+.tmp/
+.cache/

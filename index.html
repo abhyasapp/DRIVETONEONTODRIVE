@@ -1,0 +1,1172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101827">
+  <meta name="description" content="Abhyas question database review console and pipeline monitor">
+  <title>Abhyas Data Console</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1120;--panel:#131d2e;--line:#26364c;--text:#edf4ff;--muted:#9aabc2;--blue:#74a7ff;--green:#6ee7ad;--yellow:#ffd166;--red:#ff8585;--violet:#c4a3ff}
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(ellipse at 14% 0,#172c4e 0,transparent 40%),var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+    a{color:var(--blue)}
+    .wrap{max-width:1180px;margin:auto;padding:26px 20px 70px}
+    header.top{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 0 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+    .brand{font-weight:750;letter-spacing:.02em}.brand span{color:var(--blue)}
+    .eyebrow{color:var(--blue);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+    h1{font-size:clamp(28px,4.4vw,42px);line-height:1.08;margin:8px 0 10px}
+    h2{font-size:19px;margin:0 0 4px}h3{font-size:15px;margin:18px 0 8px}
+    .lead{color:var(--muted);max-width:720px;margin:0}
+    .hero{padding:30px 0 22px}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+    .button{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:9px 14px;border-radius:9px;border:1px solid var(--line);background:#1a2940;color:var(--text);font-weight:650;text-decoration:none;cursor:pointer;font-size:14px}
+    .button.primary{background:#2d68cc;border-color:#4d83e0}
+    .button.ghost{background:transparent}
+    .button.danger{background:#3a1b1b;border-color:#6b2b2b;color:#ffb3b3}
+    .button:hover{filter:brightness(1.14)}.button:disabled{opacity:.45;cursor:not-allowed}
+    .panel{background:linear-gradient(145deg,rgba(23,37,59,.97),rgba(16,26,42,.98));border:1px solid var(--line);border-radius:15px;padding:20px;box-shadow:0 12px 35px #0002;margin-bottom:18px}
+    .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+    .muted{color:var(--muted);font-size:13px}
+    .badge{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;padding:4px 9px;color:var(--muted);font-size:12px;white-space:nowrap}
+    .dot{width:8px;height:8px;border-radius:50%;background:#8190a6}
+    .dot.success{background:var(--green)}.dot.failure{background:var(--red)}.dot.running{background:var(--yellow);box-shadow:0 0 0 4px #ffd16620}
+    .run{padding:11px 0;border-top:1px solid var(--line)}.run:first-child{border-top:0}
+    .run-title{font-weight:650;text-decoration:none;color:var(--text)}
+    .run-meta{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:4px}
+    .run-meta small{color:var(--muted)}
+    .callout{margin-top:14px;padding:12px 14px;border-radius:9px;background:#3a2b122e;border:1px solid #705729;color:#f5d994;font-size:13px}
+    .callout.error{background:#3a16162e;border-color:#7a3232;color:#ffc0c0}
+    .callout.ok{background:#123a2a2e;border-color:#2b6b4b;color:#a9f0c8}
+    code{background:#0b1422;border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:#c5dcff;font-size:13px}
+    footer{padding-top:20px;margin-top:24px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+    .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+    .field label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+    input[type=text],input[type=password],textarea,select{background:#0d1727;border:1px solid var(--line);color:var(--text);padding:9px 11px;border-radius:9px;font:inherit;width:100%}
+    textarea{min-height:70px;resize:vertical}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .row>*{flex:0 0 auto}.row .grow{flex:1 1 220px}
+    nav.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
+    nav.tabs button{background:#16213a;border:1px solid var(--line);color:var(--text);padding:8px 13px;border-radius:999px;cursor:pointer;font:inherit;font-size:14px}
+    nav.tabs button.on{background:#2d68cc;border-color:#4d83e0}
+    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+    .card{background:#0f1a2b;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+    .card .v{font-size:24px;font-weight:750;line-height:1.2}
+    .card .k{color:var(--muted);font-size:12px;margin-top:2px}
+    .card.alert .v{color:var(--yellow)}.card.bad .v{color:var(--red)}.card.good .v{color:var(--green)}
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+    th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+    tbody tr:hover{background:#0f1a2b}
+    .chip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#1d2740;color:#a9c4ff;margin-right:4px;white-space:nowrap}
+    .chip.warn{background:#3a2b12;color:#ffd98a}.chip.bad{background:#3a1616;color:#ff9c9c}.chip.ok{background:#123a2a;color:#8ff0bd}
+    .copy{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#0f1a2b}
+    .copy .hdr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-bottom:8px}
+    .opt{padding:4px 10px;margin:3px 0;background:#0b1422;border-radius:7px;white-space:pre-wrap;border:1px solid transparent}
+    .opt.right{border-color:#2c6b47;background:#143a26}
+    .stem{margin:6px 0 8px}
+    .exp{color:var(--muted);margin-top:8px;font-size:13px;white-space:pre-wrap}
+    .empty{padding:16px 0;color:var(--muted)}
+    .status{font-size:13px;color:var(--muted)}
+    .status.busy{color:var(--blue)}.status.bad{color:var(--red)}.status.good{color:var(--green)}
+    .issue{display:flex;gap:12px;align-items:center;background:#0f1a2b;border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin:8px 0}
+    .issue .n{margin-left:auto;font-weight:750;font-size:17px}
+    .issue.ok{border-color:#1f4a35}.issue.warn{border-color:#5c4a1d}.issue.error{border-color:#5f2626}
+    dialog{border:1px solid var(--line);border-radius:16px;background:#101b2c;color:var(--text);width:min(720px,94vw);padding:0}
+    dialog::backdrop{background:#04070dbb}
+    .dialog-body{padding:20px}
+    .dialog-foot{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:14px 20px;border-top:1px solid var(--line);background:#0d1727;border-radius:0 0 16px 16px}
+    .option-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+    .option-row input[type=radio]{flex:0 0 auto;accent-color:#4d83e0}
+    .option-row input[type=text]{flex:1 1 auto}
+    .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+    @media(max-width:760px){.wrap{padding:18px 13px 50px}.panel{padding:15px}.hero{padding:22px 0 16px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><span>ABHYAS</span> / DATA CONSOLE</div>
+    <div class="row">
+      <span class="badge" id="connBadge"><span class="dot"></span><span id="connText">Not connected</span></span>
+      <a class="button ghost" href="https://github.com/abhyasapp/DRIVETONEONTODRIVE/actions/workflows/daily_pipeline.yml" target="_blank" rel="noopener">GitHub Actions ↗</a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="eyebrow">Question data operations</div>
+    <h1>Review the pool.<br>Merge what is truly duplicate.</h1>
+    <p class="lead">Connect to the question database to verify counts, inspect exact and near duplicates, edit a wrong question, and merge copies. Every merge and delete is checked inside Postgres — same chapter, one verified answer — and keeps an audit snapshot.</p>
+  </section>
+
+  <section class="panel" id="connectPanel">
+    <div class="panel-head">
+      <div>
+        <h2>Connect to the database</h2>
+        <div class="muted">Admin step. The connection string stays in this browser tab only and is never committed or sent anywhere except your Neon project.</div>
+      </div>
+      <span class="badge"><span class="dot"></span>Admin only</span>
+    </div>
+    <div class="field">
+      <label for="dsn">Neon connection string (postgres://…)</label>
+      <input id="dsn" type="password" autocomplete="off" spellcheck="false" placeholder="postgresql://user:password@ep-xxx-pooler.region.aws.neon.tech/dbname">
+    </div>
+    <div class="row">
+      <button class="button primary" id="connectBtn">Connect</button>
+      <button class="button ghost" id="installBtn" disabled title="Creates the review helper functions in the database">Install / refresh helpers</button>
+      <button class="button ghost" id="forgetBtn" hidden>Disconnect</button>
+      <span class="status" id="connectStatus"></span>
+    </div>
+    <div class="callout">This page is public, the credentials are not. Anyone with the connection string can read and change the database, so use a Neon role limited to this database, disconnect when you finish, and never share a link containing it. Merges need the helper functions installed once (button above).</div>
+    <div class="callout" id="localHint">No database handy? Run the offline reviewer on your own machine instead: <code>python -m review.dashboard --host 127.0.0.1 --port 8790</code> then open <code>http://127.0.0.1:8790</code>.</div>
+  </section>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="verify">Verify</button>
+    <button data-tab="dupes">Exact duplicates</button>
+    <button data-tab="review">Near duplicates</button>
+    <button data-tab="questions">Questions</button>
+  </nav>
+
+  <main>
+    <section class="panel" id="tab-overview" hidden>
+      <div class="panel-head">
+        <div><h2>Database overview</h2><div class="muted">Live counts from the connected database</div></div>
+        <button class="button ghost" id="overviewRefresh">Refresh</button>
+      </div>
+      <div class="cards" id="overviewCards"><div class="empty">Loading…</div></div>
+      <h3>Where questions come from</h3>
+      <div id="overviewLevels" class="muted">Loading…</div>
+      <h3>Classification sources</h3>
+      <div id="overviewClassified" class="muted">Loading…</div>
+      <h3>Merges recorded</h3>
+      <div id="overviewDeletions" class="muted">Loading…</div>
+      <div id="overviewNote"></div>
+    </section>
+
+    <section class="panel" id="tab-verify" hidden>
+      <div class="panel-head">
+        <div><h2>Data verification</h2><div class="muted">Structural checks against the connected database</div></div>
+        <button class="button primary" id="verifyBtn">Run checks</button>
+      </div>
+      <div id="verifyBanner" class="callout" hidden></div>
+      <div id="verifyList"><div class="empty">Run the checks to see the current state.</div></div>
+    </section>
+
+    <section class="panel" id="tab-dupes" hidden>
+      <div class="panel-head">
+        <div>
+          <h2>Exact duplicates</h2>
+          <div class="muted">Question text and options hash to the same identity inside one chapter. Merging only combines copies that also share one verified answer; unanswered or conflicting copies stay for review.</div>
+        </div>
+        <div class="row">
+          <button class="button ghost" id="dupPrev">‹ Prev</button>
+          <span class="status" id="dupPos"></span>
+          <button class="button ghost" id="dupNext">Next ›</button>
+        </div>
+      </div>
+      <div id="dupTable"><div class="empty">Loading…</div></div>
+      <div id="dupDetail"></div>
+    </section>
+
+    <section class="panel" id="tab-review" hidden>
+      <div class="panel-head">
+        <div>
+          <h2>Near duplicates</h2>
+          <div class="muted">Fuzzy candidates found by the pipeline. Similarity is not proof — read both, then merge into the better copy, reject, or edit first.</div>
+        </div>
+        <div class="row">
+          <select id="reviewStatus" aria-label="Candidate status">
+            <option value="pending">Pending</option>
+            <option value="rejected">Rejected</option>
+            <option value="merged">Merged</option>
+          </select>
+          <button class="button ghost" id="reviewPrev">‹ Prev</button>
+          <span class="status" id="reviewPos"></span>
+          <button class="button ghost" id="reviewNext">Next ›</button>
+        </div>
+      </div>
+      <div id="reviewList"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel" id="tab-questions" hidden>
+      <div class="panel-head">
+        <div><h2>Questions</h2><div class="muted">Search, inspect, edit or delete a single question</div></div>
+        <div class="row">
+          <button class="button ghost" id="qPrev">‹ Prev</button>
+          <span class="status" id="qPos"></span>
+          <button class="button ghost" id="qNext">Next ›</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:14px">
+        <input class="grow" id="qSearch" type="text" placeholder="Search question text" aria-label="Search question text">
+        <select id="qLevel" aria-label="Level"><option value="">All levels</option></select>
+        <select id="qOnly" aria-label="Filter">
+          <option value="">Everything</option>
+          <option value="unanswered">Unanswered</option>
+          <option value="dupes">Duplicate members</option>
+          <option value="corrected">Human-corrected</option>
+        </select>
+      </div>
+      <div id="qList"><div class="empty">Loading…</div></div>
+    </section>
+  </main>
+
+  <section class="panel" id="runsPanel">
+    <div class="panel-head">
+      <div><h2>Pipeline history</h2><div class="muted">Recent runs of the public daily workflow</div></div>
+      <span class="badge" id="runsState"><span class="dot"></span>Loading</span>
+    </div>
+    <div id="runs"><div class="empty">Fetching recent runs…</div></div>
+    <a class="muted" href="https://github.com/abhyasapp/DRIVETONEONTODRIVE/actions/workflows/daily_pipeline.yml" target="_blank" rel="noopener">All runs, downloadable logs and artifacts ↗</a>
+  </section>
+
+  <footer>
+    Merges and deletes are audited in <code>dedup_deletions</code> and <code>review_deletions</code>. Back up the database before a large cleanup.
+  </footer>
+</div>
+
+<dialog id="editor" aria-label="Edit question">
+  <form method="dialog" id="editorForm">
+    <div class="dialog-body">
+      <div class="panel-head">
+        <div><h2 id="editorTitle">Edit question</h2><div class="muted" id="editorMeta"></div></div>
+        <button class="button ghost" type="button" id="editorClose">Close</button>
+      </div>
+      <div class="field">
+        <label for="editorText">Question text</label>
+        <textarea id="editorText" required></textarea>
+      </div>
+      <div class="field">
+        <label>Options <span class="muted">(select the correct one)</span></label>
+        <div id="editorOptions"></div>
+        <div class="row"><button class="button ghost" type="button" id="addOption">Add option</button><span class="muted">Leave every option unselected when the answer is still unknown.</span></div>
+      </div>
+      <div class="field">
+        <label for="editorExplanation">Explanation</label>
+        <textarea id="editorExplanation"></textarea>
+      </div>
+      <label class="row" style="gap:8px;align-items:flex-start">
+        <input type="checkbox" id="editorCorrection" checked>
+        <span class="muted">Record this edit as a source correction, so the next Drive sync keeps the corrected text instead of restoring the old one.</span>
+      </label>
+      <input type="hidden" id="editorId">
+      <input type="hidden" id="editorContext">
+    </div>
+    <div class="dialog-foot">
+      <span class="status" id="editorStatus"></span>
+      <div class="row">
+        <button class="button ghost" type="button" id="editorCancel">Cancel</button>
+        <button class="button primary" type="submit" id="editorSave">Save changes</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<script src="./review/identity.js"></script>
+<script src="./review/sqlsplit.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const $ = (selector, scope = document) => scope.querySelector(selector);
+  const $$ = (selector, scope = document) => Array.from(scope.querySelectorAll(selector));
+  const esc = value => String(value === null || value === undefined ? '' : value)
+    .replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const num = value => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const fmt = value => num(value).toLocaleString();
+  const Identity = window.AbhyasIdentity;
+
+  const JSON_COLUMNS = new Set(['options', 'matched_keywords', 'raw', 'snapshot', 'correct', 'q1_options', 'q2_options']);
+  const OPTION_COUNT = "(CASE WHEN jsonb_typeof(options) = 'array' THEN jsonb_array_length(options) ELSE 0 END)";
+  const UNANSWERED = "correct_index IS NULL AND coalesce(btrim(correct_text), '') = ''";
+  const UNANSWERED_Q = "q.correct_index IS NULL AND coalesce(btrim(q.correct_text), '') = ''";
+
+  const state = {
+    dsn: '',
+    endpoint: '',
+    helpers: false,
+    tab: 'overview',
+    dupOffset: 0,
+    reviewOffset: 0,
+    qOffset: 0,
+    qSearch: '',
+    qLevel: '',
+    qOnly: ''
+  };
+
+  const status = (element, message, kind) => {
+    element.textContent = message || '';
+    element.className = `status${kind ? ` ${kind}` : ''}`;
+  };
+
+  const decodeCell = (name, value) => {
+    if (value === null || value === undefined) return null;
+    if (JSON_COLUMNS.has(name) && typeof value === 'string') {
+      try { return JSON.parse(value); } catch { return value; }
+    }
+    return value;
+  };
+
+  async function sql(query, params = []) {
+    if (!state.endpoint) throw new Error('Not connected to a database.');
+    let response;
+    try {
+      response = await fetch(state.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Neon-Connection-String': state.dsn,
+          'Neon-Array-Mode': 'true'
+        },
+        body: JSON.stringify({ query, params })
+      });
+    } catch (error) {
+      throw new Error(`Could not reach the database endpoint (${error.message}). The browser console needs a Neon connection string.`);
+    }
+    const text = await response.text();
+    let payload;
+    try { payload = JSON.parse(text); } catch {
+      throw new Error(`Database returned ${response.status}: ${text.slice(0, 180)}`);
+    }
+    if (!response.ok) {
+      throw new Error(payload.message || payload.error || `Database returned ${response.status}`);
+    }
+    const names = (payload.fields || []).map(field => field.name);
+    return (payload.rows || []).map(row => {
+      const record = {};
+      names.forEach((name, index) => { record[name] = decodeCell(name, row[index]); });
+      return record;
+    });
+  }
+  const sqlOne = async (query, params) => (await sql(query, params))[0] || {};
+
+  /* ---------------------------------------------------------------- connection */
+
+  function endpointFor(dsn) {
+    const normalized = dsn.trim().replace(/^postgres(ql)?:\/\//, 'https://');
+    const url = new URL(normalized);
+    if (!/neon\.tech$/i.test(url.hostname)) {
+      throw new Error(`This console needs a Neon host (…neon.tech) for its HTTPS SQL endpoint. Use the local reviewer for other Postgres hosts.`);
+    }
+    return `https://${url.hostname}/sql`;
+  }
+
+  function setConnected(connected) {
+    $('#connBadge').className = `badge`;
+    $('#connBadge').innerHTML = connected
+      ? '<span class="dot success"></span><span id="connText">Connected</span>'
+      : '<span class="dot"></span><span id="connText">Not connected</span>';
+    $('#tabs').hidden = !connected;
+    $('#forgetBtn').hidden = !connected;
+    $('#installBtn').disabled = !connected;
+    $$('#tabs button').forEach(button => {
+      button.disabled = !connected;
+      button.classList.toggle('on', connected && button.dataset.tab === state.tab);
+    });
+    $$('main > section').forEach(section => {
+      section.hidden = !connected || section.id !== `tab-${state.tab}`;
+    });
+  }
+
+  async function connect(dsn, quiet) {
+    const target = $('#connectStatus');
+    if (!quiet) status(target, 'Connecting…', 'busy');
+    state.dsn = dsn;
+    try {
+      state.endpoint = endpointFor(dsn);
+    } catch (error) {
+      state.endpoint = '';
+      setConnected(false);
+      status(target, error.message, 'bad');
+      return false;
+    }
+    try {
+      const probe = await sqlOne(`SELECT count(*)::int AS questions FROM questions WHERE canonical_id IS NULL`);
+      const helper = await sqlOne(`SELECT to_regproc('abhyas_merge_questions') IS NOT NULL AS installed`);
+      state.helpers = helper.installed === true || helper.installed === 't' || helper.installed === 'true';
+      sessionStorage.setItem('abhyas.dsn', dsn);
+      setConnected(true);
+      status(target, `Connected · ${fmt(probe.questions)} live questions${state.helpers ? '' : ' · helpers not installed yet'}`, 'good');
+      await loadOverview();
+      return true;
+    } catch (error) {
+      state.endpoint = '';
+      setConnected(false);
+      status(target, error.message, 'bad');
+      return false;
+    }
+  }
+
+  async function installHelpers() {
+    const target = $('#connectStatus');
+    status(target, 'Installing review helpers…', 'busy');
+    try {
+      const response = await fetch('./review/admin_functions.sql', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Could not load review/admin_functions.sql (${response.status})`);
+      const statements = window.AbhyasSql.split(await response.text());
+      for (const statement of statements) await sql(statement);
+      state.helpers = true;
+      status(target, `Helpers installed (${statements.length} statements)`, 'good');
+    } catch (error) {
+      status(target, `Install failed: ${error.message}`, 'bad');
+    }
+  }
+
+  $('#connectBtn').onclick = async () => {
+    const value = $('#dsn').value.trim();
+    if (!value) { status($('#connectStatus'), 'Paste the connection string first.', 'bad'); return; }
+    await connect(value);
+  };
+  $('#installBtn').onclick = installHelpers;
+  $('#forgetBtn').onclick = () => {
+    sessionStorage.removeItem('abhyas.dsn');
+    state.dsn = ''; state.endpoint = ''; state.helpers = false;
+    $('#dsn').value = '';
+    setConnected(false);
+    status($('#connectStatus'), 'Disconnected. The connection string is no longer stored in this tab.', 'good');
+  };
+  $('#dsn').addEventListener('keydown', event => { if (event.key === 'Enter') $('#connectBtn').click(); });
+
+  /* ---------------------------------------------------------------- overview */
+
+  function card(label, value, kind) {
+    return `<div class="card${kind ? ` ${kind}` : ''}"><div class="v">${esc(value)}</div><div class="k">${esc(label)}</div></div>`;
+  }
+
+  async function loadOverview() {
+    const target = $('#overviewCards');
+    target.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const questions = await sqlOne(`
+        SELECT count(*)::int AS questions,
+               count(DISTINCT identity_key)::int AS identities,
+               count(*) FILTER (WHERE ${UNANSWERED})::int AS unanswered,
+               count(*) FILTER (WHERE correct_index IS NOT NULL AND ${OPTION_COUNT} > 0
+                     AND (correct_index < 0 OR correct_index >= ${OPTION_COUNT}))::int AS out_of_range,
+               count(*) FILTER (WHERE ${OPTION_COUNT} = 0)::int AS empty_options,
+               count(*) FILTER (WHERE coalesce(btrim(explanation), '') = '')::int AS no_explanation,
+               count(*) FILTER (WHERE corrected_at IS NOT NULL)::int AS corrected
+        FROM questions WHERE canonical_id IS NULL`);
+
+      const dupes = await sqlOne(`
+        SELECT count(*)::int AS groups, coalesce(sum(n - 1), 0)::int AS extra FROM (
+          SELECT c.id AS chapter_id, q.identity_key, count(*) AS n
+          FROM questions q
+          JOIN files f ON f.id = q.file_ref_id
+          JOIN books b ON b.id = f.book_id
+          JOIN chapters c ON c.id = b.chapter_id
+          WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
+          GROUP BY 1, 2 HAVING count(*) > 1) grouped`);
+
+      const counts = await sqlOne(`
+        SELECT (SELECT count(*) FROM chapters)::int AS chapters,
+               (SELECT count(*) FROM subtopics)::int AS subtopics,
+               (SELECT count(*) FROM files)::int AS files,
+               (SELECT count(*) FROM question_images)::int AS images,
+               (SELECT count(*) FROM applied_corrections)::int AS corrections,
+               (SELECT count(*) FROM dedup_deletions)::int AS merges`);
+
+      target.innerHTML = [
+        card('Live questions', fmt(questions.questions)),
+        card('Unique identities', fmt(questions.identities)),
+        card('Duplicate groups', fmt(dupes.groups), num(dupes.groups) ? 'alert' : 'good'),
+        card('Extra copies to merge', fmt(dupes.extra), num(dupes.extra) ? 'alert' : 'good'),
+        card('Unanswered', fmt(questions.unanswered), num(questions.unanswered) ? 'alert' : 'good'),
+        card('Answer index out of range', fmt(questions.out_of_range), num(questions.out_of_range) ? 'bad' : 'good'),
+        card('No options', fmt(questions.empty_options), num(questions.empty_options) ? 'bad' : 'good'),
+        card('No explanation', fmt(questions.no_explanation)),
+        card('Human-corrected', fmt(questions.corrected)),
+        card('Corrections applied', fmt(counts.corrections)),
+        card('Merges recorded', fmt(counts.merges)),
+        card('Chapters', fmt(counts.chapters)),
+        card('Subtopics', fmt(counts.subtopics)),
+        card('Source files', fmt(counts.files)),
+        card('Images', fmt(counts.images))
+      ].join('');
+
+      if (state.helpers) {
+        try {
+          const conflict = await sqlOne(`
+            SELECT count(*)::int AS conflicting FROM (
+              SELECT c.id AS chapter, q.identity_key
+              FROM questions q
+              JOIN files f ON f.id = q.file_ref_id
+              JOIN books b ON b.id = f.book_id
+              JOIN chapters c ON c.id = b.chapter_id
+              WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
+              GROUP BY 1, 2 HAVING count(*) > 1
+                AND count(DISTINCT abhyas_answer_key(q.correct_text, q.correct_index, q.options)) > 1) groups`);
+          $('#overviewNote').innerHTML = `<div class="callout">${fmt(conflict.conflicting)} duplicate group(s) contain conflicting answers. Those copies are never merged automatically — resolve the answer in the duplicate view first.</div>`;
+        } catch (error) {
+          $('#overviewNote').innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+        }
+      } else {
+        $('#overviewNote').innerHTML = '<div class="callout">Install the review helpers to unlock duplicate merging and answer-conflict checks.</div>';
+      }
+
+      const levels = await sql(`
+        SELECT l.level_key AS name, count(DISTINCT q.id)::int AS total
+        FROM levels l
+        JOIN chapters c ON c.level_id = l.id
+        JOIN books b ON b.chapter_id = c.id
+        JOIN files f ON f.book_id = b.id
+        JOIN questions q ON q.file_ref_id = f.id
+        WHERE q.canonical_id IS NULL
+        GROUP BY 1 ORDER BY 1`);
+      $('#overviewLevels').innerHTML = levels.length
+        ? levels.map(row => `<span class="chip">${esc(row.name)}: ${fmt(row.total)}</span>`).join(' ')
+        : 'No levels recorded.';
+
+      const classified = await sql(`
+        SELECT coalesce(classified_by, '(none)') AS source, count(*)::int AS total
+        FROM question_subtopics GROUP BY 1 ORDER BY 2 DESC LIMIT 8`);
+      $('#overviewClassified').innerHTML = classified.length
+        ? classified.map(row => `<span class="chip">${esc(row.source)}: ${fmt(row.total)}</span>`).join(' ')
+        : 'No classifications yet.';
+
+      const deletions = await sql(`
+        SELECT reason, count(*)::int AS total FROM dedup_deletions GROUP BY 1 ORDER BY 2 DESC LIMIT 8`);
+      $('#overviewDeletions').innerHTML = deletions.length
+        ? deletions.map(row => `<span class="chip">${esc(row.reason)}: ${fmt(row.total)}</span>`).join(' ')
+        : 'No merges recorded yet.';
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
+  }
+  $('#overviewRefresh').onclick = loadOverview;
+
+  /* ---------------------------------------------------------------- verify */
+
+  const CHECKS = [
+    { id: 'unanswered', title: 'Unanswered questions', hint: 'correct_index null and no correct_text', view: 'questions', query: `SELECT count(*)::int AS n FROM questions WHERE canonical_id IS NULL AND ${UNANSWERED}` },
+    { id: 'range', title: 'Answer index out of range', hint: 'correct_index points outside the options array', query: `SELECT count(*)::int AS n FROM questions WHERE canonical_id IS NULL AND correct_index IS NOT NULL AND ${OPTION_COUNT} > 0 AND (correct_index < 0 OR correct_index >= ${OPTION_COUNT})` },
+    { id: 'options', title: 'Questions with no options', hint: 'options missing or an empty array', query: `SELECT count(*)::int AS n FROM questions WHERE canonical_id IS NULL AND ${OPTION_COUNT} = 0` },
+    { id: 'links', title: 'Questions without subtopic links', hint: 'they cannot appear in a chapter export', view: 'questions', query: `SELECT count(*)::int AS n FROM questions q WHERE q.canonical_id IS NULL AND NOT EXISTS (SELECT 1 FROM question_subtopics qs WHERE qs.question_id = q.id)` },
+    { id: 'deferred', title: 'Deferred classifications', hint: 'leftovers from an LLM outage; rerun classification', query: `SELECT count(*)::int AS n FROM question_subtopics WHERE classified_by = 'deferred'` },
+    { id: 'mixed', title: 'Unclassified (mixedqn)', hint: 'neither keyword nor model classifier placed these', query: `SELECT count(*)::int AS n FROM question_subtopics qs JOIN subtopics st ON st.id = qs.subtopic_id WHERE st.code = 'mixedqn'` },
+    { id: 'orphans_q', title: 'Orphan questions', hint: 'question points at a missing file', query: `SELECT count(*)::int AS n FROM questions q LEFT JOIN files f ON f.id = q.file_ref_id WHERE f.id IS NULL` },
+    { id: 'orphans_f', title: 'Orphan files', hint: 'file points at a missing book', query: `SELECT count(*)::int AS n FROM files f LEFT JOIN books b ON b.id = f.book_id WHERE b.id IS NULL` },
+    { id: 'orphans_b', title: 'Orphan books', hint: 'book points at a missing chapter', query: `SELECT count(*)::int AS n FROM books b LEFT JOIN chapters c ON c.id = b.chapter_id WHERE c.id IS NULL` },
+    { id: 'orphans_qs', title: 'Orphan subtopic links', hint: 'link points at a missing question', query: `SELECT count(*)::int AS n FROM question_subtopics qs LEFT JOIN questions q ON q.id = qs.question_id WHERE q.id IS NULL` },
+    { id: 'corrections', title: 'Corrections applied', hint: '0 may mean the correction sync has not run', invert: true, query: `SELECT count(*)::int AS n FROM applied_corrections` }
+  ];
+
+  async function runVerify() {
+    const banner = $('#verifyBanner');
+    const list = $('#verifyList');
+    banner.hidden = false;
+    banner.className = 'callout';
+    banner.textContent = 'Running checks…';
+    list.innerHTML = '';
+    const results = [];
+    const started = Date.now();
+    for (const check of CHECKS) {
+      try {
+        const row = await sqlOne(check.query);
+        results.push({ ...check, count: num(row.n), error: null });
+      } catch (error) {
+        results.push({ ...check, count: 0, error: error.message });
+      }
+    }
+    results.push({
+      id: 'dupes',
+      title: 'Duplicate identity groups',
+      hint: 'same question and options inside one chapter',
+      view: 'dupes',
+      count: num((await sqlOne(`SELECT count(*)::int AS n FROM (
+        SELECT c.id, q.identity_key FROM questions q
+        JOIN files f ON f.id = q.file_ref_id
+        JOIN books b ON b.id = f.book_id
+        JOIN chapters c ON c.id = b.chapter_id
+        WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
+        GROUP BY 1, 2 HAVING count(*) > 1) grouped`)).n),
+      error: null
+    });
+
+    const errors = results.filter(row => row.error || (!row.invert && num(row.count) > 0
+      && ['range', 'options', 'orphans_q', 'orphans_f', 'orphans_b', 'orphans_qs', 'links'].includes(row.id))).length;
+    const warnings = results.filter(row => !row.error && num(row.count) > 0 && !['range', 'options', 'orphans_q', 'orphans_f', 'orphans_b', 'orphans_qs', 'links'].includes(row.id)).length;
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+
+    banner.className = `callout ${errors ? 'error' : warnings ? '' : 'ok'}`;
+    banner.textContent = errors
+      ? `FAIL — ${errors} blocking issue(s) and ${warnings} warning(s) in ${seconds}s.`
+      : warnings
+        ? `WARN — ${warnings} thing(s) to look at, nothing structural is broken (${seconds}s).`
+        : `PASS — every check is clean (${seconds}s).`;
+
+    list.innerHTML = results.map(row => {
+      const bad = row.error || num(row.count) > 0
+        ? (['range', 'options', 'orphans_q', 'orphans_f', 'orphans_b', 'orphans_qs', 'links'].includes(row.id) ? 'error' : 'warn')
+        : 'ok';
+      return `<div class="issue ${bad}">
+        <div><div><b>${esc(row.title)}</b></div><div class="muted">${esc(row.error || row.hint)}</div></div>
+        <span class="n">${row.error ? '—' : fmt(row.count)}</span>
+        ${row.view ? `<button class="button ghost" data-view="${esc(row.view)}">Inspect</button>` : ''}
+      </div>`;
+    }).join('');
+    $$('#verifyList [data-view]').forEach(button => {
+      button.onclick = () => switchTab(button.dataset.view);
+    });
+  }
+  $('#verifyBtn').onclick = runVerify;
+
+  /* ---------------------------------------------------------------- exact duplicates */
+
+  async function loadDupes(offset) {
+    state.dupOffset = Math.max(0, offset);
+    const target = $('#dupTable');
+    target.innerHTML = '<div class="empty">Loading…</div>';
+    $('#dupDetail').innerHTML = '';
+    try {
+      const total = num((await sqlOne(`SELECT count(*)::int AS n FROM (
+        SELECT c.id, q.identity_key FROM questions q
+        JOIN files f ON f.id = q.file_ref_id
+        JOIN books b ON b.id = f.book_id
+        JOIN chapters c ON c.id = b.chapter_id
+        WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
+        GROUP BY 1, 2 HAVING count(*) > 1) grouped`)).n);
+      const rows = await sql(`
+        SELECT q.identity_key, c.id AS chapter_id, c.chapter_name,
+               count(*)::int AS copies, min(q.id) AS sample_id, min(q.question_text) AS sample
+        FROM questions q
+        JOIN files f ON f.id = q.file_ref_id
+        JOIN books b ON b.id = f.book_id
+        JOIN chapters c ON c.id = b.chapter_id
+        WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
+        GROUP BY 1, 2, 3 HAVING count(*) > 1
+        ORDER BY copies DESC, sample_id
+        LIMIT 50 OFFSET $1`, [state.dupOffset]);
+
+      const from = total ? state.dupOffset + 1 : 0;
+      $('#dupPos').textContent = `${from}–${Math.min(state.dupOffset + 50, total)} of ${fmt(total)} groups`;
+      $('#dupPrev').disabled = state.dupOffset <= 0;
+      $('#dupNext').disabled = state.dupOffset + 50 >= total;
+
+      target.innerHTML = rows.length ? `<table>
+        <thead><tr><th>Chapter</th><th>Copies</th><th>Sample question</th><th></th></tr></thead>
+        <tbody>${rows.map((row, index) => `<tr>
+          <td>${esc(row.chapter_name || '')}</td>
+          <td><span class="chip warn">${fmt(row.copies)}</span></td>
+          <td>${esc(String(row.sample || '').slice(0, 150))}</td>
+          <td><button class="button ghost" data-key="${esc(row.identity_key)}" data-chapter="${num(row.chapter_id)}">Inspect ${state.dupOffset + index + 1}</button></td>
+        </tr>`).join('')}</tbody></table>`
+        : '<div class="empty">No exact duplicate groups in this chapter scope.</div>';
+
+      $$('#dupTable [data-key]').forEach(button => {
+        button.onclick = () => showGroup(button.dataset.key, num(button.dataset.chapter));
+      });
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
+  }
+  $('#dupPrev').onclick = () => loadDupes(state.dupOffset - 50);
+  $('#dupNext').onclick = () => loadDupes(state.dupOffset + 50);
+
+  function renderCopies(rows) {
+    return rows.map(row => {
+      const options = Array.isArray(row.options) ? row.options : [];
+      const key = Identity.answerKey(row.correct_text, row.correct_index, options);
+      const answer = key.startsWith('__')
+        ? `<span class="chip bad">${esc(key.replace(/__|_/g, ' ').trim())}</span>`
+        : `<span class="chip ok">answer: ${esc(options[row.correct_index] || row.correct_text || '')}</span>`;
+      return `<div class="copy">
+        <div class="hdr">
+          <b>#${num(row.id)}</b>
+          ${row.book_name ? `<span>${esc(row.book_name)}</span>` : ''}
+          ${row.subtopic ? `<span>${esc(row.subtopic)}</span>` : ''}
+          ${row.question_number !== null && row.question_number !== undefined ? `<span>Q${esc(row.question_number)}</span>` : ''}
+          ${row.corrected_at ? '<span class="chip">human-corrected</span>' : ''}
+          ${row.quality_score !== null && row.quality_score !== undefined ? `<span>score ${num(row.quality_score)}</span>` : ''}
+          ${answer}
+          <span style="margin-left:auto"></span>
+          <button class="button ghost" data-edit="${num(row.id)}">Edit</button>
+          <button class="button danger" data-delete="${num(row.id)}">Delete</button>
+        </div>
+        <div class="stem">${esc(row.question_text || '')}</div>
+        ${options.map((option, index) => `<div class="opt${index === num(row.correct_index) ? ' right' : ''}">[${index}] ${esc(option)}</div>`).join('')}
+        ${row.explanation ? `<div class="exp">${esc(row.explanation)}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  async function showGroup(identityKey, chapterId) {
+    const target = $('#dupDetail');
+    target.innerHTML = '<div class="empty">Loading copies…</div>';
+    try {
+      const rows = await sql(`
+        SELECT q.id, q.question_number, q.question_text, q.options, q.correct_index,
+               q.correct_text, q.explanation, q.quality_score::float AS quality_score,
+               q.corrected_at, b.book_name, f.subtopic
+        FROM questions q
+        LEFT JOIN files f ON f.id = q.file_ref_id
+        LEFT JOIN books b ON b.id = f.book_id
+        LEFT JOIN chapters c ON c.id = b.chapter_id
+        WHERE q.identity_key = $1 AND c.id = $2 AND q.canonical_id IS NULL
+        ORDER BY q.id`, [identityKey, chapterId]);
+
+      const buckets = new Map();
+      rows.forEach(row => {
+        const key = Identity.answerKey(row.correct_text, row.correct_index,
+          Array.isArray(row.options) ? row.options : []);
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(row);
+      });
+      const mergeable = Array.from(buckets.entries())
+        .filter(([key, list]) => !key.startsWith('__') && list.length > 1)
+        .reduce((sum, [, list]) => sum + list.length - 1, 0);
+      const held = rows.length - mergeable;
+
+      target.innerHTML = `<div class="panel" style="margin-top:16px">
+        <div class="panel-head">
+          <div>
+            <h2>Exact group · ${rows.length} copies</h2>
+            <div class="muted">${mergeable} copy(ies) can merge now, ${held} need a human decision (unanswered or conflicting answer).</div>
+          </div>
+          <div class="row">
+            <button class="button primary" id="mergeGroup" ${mergeable && state.helpers ? '' : 'disabled'}>Merge safe copies</button>
+            <button class="button ghost" id="closeGroup">Close</button>
+          </div>
+        </div>
+        <div id="groupStatus" class="status"></div>
+        ${renderCopies(rows)}
+      </div>`;
+
+      $$('#dupDetail [data-edit]').forEach(button => {
+        button.onclick = () => openEditor(num(button.dataset.edit), () => showGroup(identityKey, chapterId));
+      });
+      $$('#dupDetail [data-delete]').forEach(button => {
+        button.onclick = () => deleteQuestion(num(button.dataset.delete), () => showGroup(identityKey, chapterId));
+      });
+      $('#closeGroup').onclick = () => { target.innerHTML = ''; };
+      const mergeButton = $('#mergeGroup');
+      if (mergeButton && !mergeButton.disabled) {
+        mergeButton.onclick = async () => {
+          const note = $('#groupStatus');
+          if (!confirm(`Merge ${mergeable} copy(ies) that share one verified answer? Copies with unanswered or conflicting answers are kept. This is recorded in dedup_deletions.`)) return;
+          status(note, 'Merging…', 'busy');
+          mergeButton.disabled = true;
+          try {
+            const result = await sqlOne(`SELECT abhyas_merge_exact_group($1, $2) AS result`, [chapterId, identityKey]);
+            const summary = typeof result.result === 'string'
+              ? JSON.parse(result.result) : (result.result || {});
+            status(note, `Merged ${fmt(summary.merged)} copy(ies); ${fmt(summary.retained)} left for review.`, 'good');
+            await loadDupes(state.dupOffset);
+            await showGroup(identityKey, chapterId);
+          } catch (error) {
+            mergeButton.disabled = false;
+            status(note, error.message, 'bad');
+          }
+        };
+      }
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
+  }
+
+  /* ---------------------------------------------------------------- near duplicates */
+
+  async function loadReview(offset) {
+    state.reviewOffset = Math.max(0, offset);
+    const target = $('#reviewList');
+    target.innerHTML = '<div class="empty">Loading…</div>';
+    const wanted = $('#reviewStatus').value;
+    try {
+      const total = num((await sqlOne(
+        `SELECT count(*)::int AS n FROM dedupe_review_candidates WHERE status = $1`, [wanted])).n);
+      const rows = await sql(`
+        SELECT d.id, d.chapter_id, d.q1_id, d.q2_id,
+               d.stem_score::float AS stem_score, d.options_score::float AS options_score,
+               d.status, c.chapter_name,
+               q1.question_text AS q1_text, q1.options AS q1_options,
+               q1.correct_index AS q1_correct_index, q1.correct_text AS q1_correct_text,
+               q1.explanation AS q1_explanation,
+               q2.question_text AS q2_text, q2.options AS q2_options,
+               q2.correct_index AS q2_correct_index, q2.correct_text AS q2_correct_text,
+               q2.explanation AS q2_explanation
+        FROM dedupe_review_candidates d
+        JOIN questions q1 ON q1.id = d.q1_id
+        JOIN questions q2 ON q2.id = d.q2_id
+        LEFT JOIN chapters c ON c.id = d.chapter_id
+        WHERE d.status = $1
+        ORDER BY d.stem_score DESC, d.options_score DESC, d.id
+        LIMIT 20 OFFSET $2`, [wanted, state.reviewOffset]);
+
+      $('#reviewPos').textContent = `${total ? state.reviewOffset + 1 : 0}–${Math.min(state.reviewOffset + 20, total)} of ${fmt(total)}`;
+      $('#reviewPrev').disabled = state.reviewOffset <= 0;
+      $('#reviewNext').disabled = state.reviewOffset + 20 >= total;
+
+      target.innerHTML = rows.length ? rows.map(row => {
+        const first = { id: row.q1_id, question_text: row.q1_text, options: row.q1_options, correct_index: row.q1_correct_index, correct_text: row.q1_correct_text, explanation: row.q1_explanation };
+        const second = { id: row.q2_id, question_text: row.q2_text, options: row.q2_options, correct_index: row.q2_correct_index, correct_text: row.q2_correct_text, explanation: row.q2_explanation };
+        const firstKey = Identity.answerKey(first.correct_text, first.correct_index, Array.isArray(first.options) ? first.options : []);
+        const secondKey = Identity.answerKey(second.correct_text, second.correct_index, Array.isArray(second.options) ? second.options : []);
+        const bothAnswered = !firstKey.startsWith('__') && !secondKey.startsWith('__');
+        const agree = bothAnswered && firstKey === secondKey;
+        return `<div class="copy">
+          <div class="hdr">
+            <b>Candidate ${num(row.id)}</b>
+            <span>${esc(row.chapter_name || `chapter ${row.chapter_id}`)}</span>
+            <span>stem ${num(row.stem_score).toFixed(1)}%</span>
+            <span>options ${num(row.options_score).toFixed(1)}%</span>
+            <span class="chip ${row.status === 'pending' ? 'warn' : ''}">${esc(row.status)}</span>
+            ${agree ? '<span class="chip ok">answers agree</span>' : bothAnswered ? '<span class="chip bad">answers differ</span>' : '<span class="chip bad">answer missing</span>'}
+          </div>
+          ${renderCopies([first, second])}
+          <div class="row">
+            <button class="button primary" data-merge-a="${num(row.id)}" ${agree && state.helpers ? '' : 'disabled'}>Merge into #${num(row.q1_id)}</button>
+            <button class="button" data-merge-b="${num(row.id)}" ${agree && state.helpers ? '' : 'disabled'}>Merge into #${num(row.q2_id)}</button>
+            <button class="button ghost" data-reject="${num(row.id)}" ${row.status === 'pending' ? '' : 'disabled'}>Not a duplicate</button>
+            <button class="button ghost" data-edit="${num(row.q1_id)}">Edit #${num(row.q1_id)}</button>
+            <button class="button ghost" data-edit="${num(row.q2_id)}">Edit #${num(row.q2_id)}</button>
+          </div>
+          ${agree ? '' : '<div class="callout">Merging needs one verified, identical answer on both copies. Fix the answer with Edit, then merge.</div>'}
+        </div>`;
+      }).join('') : '<div class="empty">Nothing in this queue.</div>';
+
+      $$('#reviewList [data-merge-a]').forEach(button => {
+        button.onclick = () => mergeCandidate(num(button.dataset.mergeA), 'a', () => loadReview(state.reviewOffset));
+      });
+      $$('#reviewList [data-merge-b]').forEach(button => {
+        button.onclick = () => mergeCandidate(num(button.dataset.mergeB), 'b', () => loadReview(state.reviewOffset));
+      });
+      $$('#reviewList [data-reject]').forEach(button => {
+        button.onclick = async () => {
+          const id = num(button.dataset.reject);
+          if (!confirm('Mark this pair as not a duplicate?')) return;
+          try {
+            await sql(`UPDATE dedupe_review_candidates SET status = 'rejected', reviewed_at = now(), review_note = coalesce(review_note, 'reviewer: not duplicate') WHERE id = $1`, [id]);
+            await loadReview(state.reviewOffset);
+          } catch (error) { alert(error.message); }
+        };
+      });
+      $$('#reviewList [data-edit]').forEach(button => {
+        button.onclick = () => openEditor(num(button.dataset.edit), () => loadReview(state.reviewOffset));
+      });
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
+  }
+  $('#reviewStatus').onchange = () => loadReview(0);
+  $('#reviewPrev').onclick = () => loadReview(state.reviewOffset - 20);
+  $('#reviewNext').onclick = () => loadReview(state.reviewOffset + 20);
+
+  async function mergeCandidate(candidateId, side, reload) {
+    if (!confirm('Merge these two questions? The other copy is deleted and an audit snapshot is kept.')) return;
+    try {
+      const row = await sqlOne(`SELECT q1_id, q2_id, q1_identity_key, q2_identity_key
+        FROM dedupe_review_candidates WHERE id = $1`, [candidateId]);
+      const keeper = side === 'a' ? num(row.q1_id) : num(row.q2_id);
+      const duplicate = side === 'a' ? num(row.q2_id) : num(row.q1_id);
+      const signature = (side === 'a' ? row.q1_identity_key : row.q2_identity_key) || 'manual';
+      await sqlOne(`SELECT abhyas_merge_questions($1, $2, 'manual_near', $3) AS result`, [keeper, duplicate, signature]);
+      await sql(`UPDATE dedupe_review_candidates SET status = 'merged', reviewed_at = now(),
+        review_note = 'merged into #' || $2 WHERE id = $1`, [candidateId, keeper]);
+      reload();
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  /* ---------------------------------------------------------------- questions */
+
+  function buildQuestionFilter() {
+    const where = ["q.canonical_id IS NULL"];
+    const params = [];
+    if (state.qSearch) {
+      params.push(`%${state.qSearch}%`);
+      where.push(`q.question_text ILIKE $${params.length}`);
+    }
+    if (state.qLevel) {
+      params.push(state.qLevel);
+      where.push(`l.level_key = $${params.length}`);
+    }
+    if (state.qOnly === 'unanswered') where.push(UNANSWERED_Q);
+    else if (state.qOnly === 'corrected') where.push('q.corrected_at IS NOT NULL');
+    else if (state.qOnly === 'dupes') {
+      where.push(`(SELECT count(*) FROM questions x
+        JOIN files xf ON xf.id = x.file_ref_id
+        JOIN books xb ON xb.id = xf.book_id
+        JOIN chapters xc ON xc.id = xb.chapter_id
+        WHERE x.identity_key = q.identity_key AND xc.id = c.id
+          AND x.canonical_id IS NULL) > 1`);
+    }
+    const joins = `FROM questions q
+      LEFT JOIN files f ON f.id = q.file_ref_id
+      LEFT JOIN books b ON b.id = f.book_id
+      LEFT JOIN chapters c ON c.id = b.chapter_id
+      LEFT JOIN levels l ON l.id = c.level_id`;
+    return { where: where.join(' AND '), params, joins };
+  }
+
+  async function loadQuestions(offset) {
+    state.qOffset = Math.max(0, offset);
+    const target = $('#qList');
+    target.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const filter = buildQuestionFilter();
+      const totalRow = await sqlOne(`SELECT count(*)::int AS n ${filter.joins} WHERE ${filter.where}`, filter.params);
+      const rows = await sql(`
+        SELECT q.id, q.question_number, q.question_text, q.options, q.correct_index,
+               q.correct_text, q.explanation, q.quality_score::float AS quality_score,
+               q.corrected_at, b.book_name, c.chapter_name, l.level_key, f.subtopic,
+               (SELECT count(*) FROM questions x
+                JOIN files xf ON xf.id = x.file_ref_id
+                JOIN books xb ON xb.id = xf.book_id
+                JOIN chapters xc ON xc.id = xb.chapter_id
+                WHERE x.identity_key = q.identity_key AND xc.id = c.id
+                  AND x.canonical_id IS NULL)::int AS copies
+        ${filter.joins} WHERE ${filter.where}
+        ORDER BY q.id DESC
+        LIMIT 25 OFFSET $${filter.params.length + 1}`,
+      [...filter.params, state.qOffset]);
+
+      const total = num(totalRow.n);
+      $('#qPos').textContent = `${total ? state.qOffset + 1 : 0}–${Math.min(state.qOffset + 25, total)} of ${fmt(total)}`;
+      $('#qPrev').disabled = state.qOffset <= 0;
+      $('#qNext').disabled = state.qOffset + 25 >= total;
+
+      target.innerHTML = rows.length ? renderCopies(rows) : '<div class="empty">No questions match.</div>';
+      $$('#qList [data-edit]').forEach(button => {
+        button.onclick = () => openEditor(num(button.dataset.edit), () => loadQuestions(state.qOffset));
+      });
+      $$('#qList [data-delete]').forEach(button => {
+        button.onclick = () => deleteQuestion(num(button.dataset.delete), () => loadQuestions(state.qOffset));
+      });
+
+      if (!$('#qLevel').dataset.loaded) {
+        const levels = await sql('SELECT level_key FROM levels ORDER BY 1');
+        levels.forEach(row => {
+          const option = document.createElement('option');
+          option.value = row.level_key;
+          option.textContent = row.level_key;
+          $('#qLevel').appendChild(option);
+        });
+        $('#qLevel').dataset.loaded = '1';
+      }
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
+  }
+  $('#qPrev').onclick = () => loadQuestions(state.qOffset - 25);
+  $('#qNext').onclick = () => loadQuestions(state.qOffset + 25);
+  $('#qOnly').onchange = event => { state.qOnly = event.target.value; loadQuestions(0); };
+  $('#qLevel').onchange = event => { state.qLevel = event.target.value; loadQuestions(0); };
+  let searchTimer = null;
+  $('#qSearch').oninput = event => {
+    state.qSearch = event.target.value.trim();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadQuestions(0), 300);
+  };
+
+  async function deleteQuestion(id, reload) {
+    if (!confirm(`Delete question #${id}? The row and its child rows are removed and a restorable snapshot is kept in review_deletions.`)) return;
+    try {
+      await sqlOne('SELECT abhyas_delete_question($1, $2) AS result', [id, 'console delete']);
+      reload();
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  /* ---------------------------------------------------------------- editor */
+
+  const editor = $('#editor');
+  let editorReload = null;
+
+  function addOptionRow(value, checked) {
+    const row = document.createElement('div');
+    row.className = 'option-row';
+    row.innerHTML = `${'<input type="radio" name="editorCorrect">'}
+      <input type="text" placeholder="Option text">
+      <button class="button ghost" type="button" title="Remove option">×</button>`;
+    const input = row.querySelector('input[type=text]');
+    input.value = value || '';
+    row.querySelector('input[type=radio]').checked = Boolean(checked);
+    row.querySelector('button').onclick = () => {
+      row.remove();
+      renumberOptions();
+    };
+    $('#editorOptions').appendChild(row);
+  }
+
+  function renumberOptions() {
+    $$('#editorOptions .option-row').forEach((row, index) => {
+      row.querySelector('input[type=radio]').value = String(index);
+    });
+  }
+
+  async function openEditor(id, reload) {
+    editorReload = reload || null;
+    status($('#editorStatus'), 'Loading…', 'busy');
+    $('#editorOptions').innerHTML = '';
+    editor.showModal();
+    try {
+      const row = await sqlOne(`
+        SELECT q.id, q.question_number, q.question_text, q.options, q.correct_index,
+               q.correct_text, q.explanation, q.identity_key, q.source_question_key,
+               q.raw, b.book_name, f.subtopic, c.id AS chapter_id, c.chapter_name
+        FROM questions q
+        LEFT JOIN files f ON f.id = q.file_ref_id
+        LEFT JOIN books b ON b.id = f.book_id
+        LEFT JOIN chapters c ON c.id = b.chapter_id
+        WHERE q.id = $1`, [id]);
+      if (!row.id) throw new Error(`Question ${id} was not found.`);
+      const options = Array.isArray(row.options) ? row.options : [];
+      const correct = row.correct_index === null || row.correct_index === undefined ? -1 : num(row.correct_index);
+      options.forEach((option, index) => addOptionRow(option, index === correct));
+      if (!options.length) { addOptionRow('', false); addOptionRow('', false); }
+      renumberOptions();
+      $('#editorText').value = row.question_text || '';
+      $('#editorExplanation').value = row.explanation || '';
+      $('#editorId').value = String(id);
+      $('#editorContext').value = JSON.stringify({
+        chapter_id: row.chapter_id,
+        chapter_name: row.chapter_name,
+        book_name: row.book_name,
+        subtopic: row.subtopic,
+        source_question_key: row.source_question_key,
+        question_number: row.question_number,
+        raw: row.raw,
+        identity_key: row.identity_key
+      });
+      $('#editorMeta').textContent = `#${id} · ${row.chapter_name || 'no chapter'} · ${row.book_name || 'no book'}`;
+      status($('#editorStatus'), '', '');
+    } catch (error) {
+      status($('#editorStatus'), error.message, 'bad');
+    }
+  }
+
+  $('#addOption').onclick = () => { addOptionRow('', false); renumberOptions(); };
+  $('#editorClose').onclick = $('#editorCancel').onclick = () => editor.close();
+
+  $('#editorForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const id = num($('#editorId').value);
+    const text = $('#editorText').value.trim();
+    const options = $$('#editorOptions .option-row').map(row => row.querySelector('input[type=text]').value.trim());
+    const picked = $$('#editorOptions input[type=radio]').findIndex(radio => radio.checked);
+    const explanation = $('#editorExplanation').value;
+    const context = JSON.parse($('#editorContext').value || '{}');
+    const target = $('#editorStatus');
+
+    if (!text) { status(target, 'The question text cannot be empty.', 'bad'); return; }
+    const kept = options.filter(option => option !== '');
+    if (options.length !== kept.length) { status(target, 'Every option row needs text, or remove the empty row.', 'bad'); return; }
+    if (picked >= options.length) { status(target, 'The selected answer no longer exists.', 'bad'); return; }
+    const correctIndex = picked >= 0 ? picked : null;
+
+    status(target, 'Saving…', 'busy');
+    $('#editorSave').disabled = true;
+    try {
+      const newIdentity = await Identity.identity(text, options);
+      const correctText = correctIndex === null ? null : options[correctIndex];
+      const quality = Identity.qualityScore(explanation, options, text.length);
+      const sourceIdentity = context.identity_key || newIdentity;
+      const sourceNumber = String(context.source_question_key || '').startsWith('n:')
+        ? String(context.source_question_key).slice(2)
+        : (String((context.raw && context.raw.q) || '').match(/^\s*(\d+)\s*[.)]/) || [])[1] || '';
+
+      await sql(`
+        UPDATE questions
+           SET question_text = $1, options = $2::jsonb, correct_index = $3,
+               correct_text = $4, explanation = $5, identity_key = $6,
+               source_identity = coalesce(source_identity, $7),
+               identity_version = 2, corrected_at = now(), quality_score = $8
+         WHERE id = $9`,
+      [text, JSON.stringify(options), correctIndex, correctText, explanation,
+        newIdentity, sourceIdentity, quality, id]);
+
+      let warning = '';
+      if ($('#editorCorrection').checked && context.chapter_id && context.book_name) {
+        try {
+          const location = await Identity.sourceLocationKey(context.book_name, context.subtopic);
+          await sql(`
+            INSERT INTO correction_source_aliases_v2
+              (chapter_id, source_identity, source_location, source_number, question_text,
+               options, correct_index, correct_text, explanation, identity_key,
+               quality_score, corrected_at)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, now())`,
+          [context.chapter_id, sourceIdentity, location, sourceNumber, text,
+            JSON.stringify(options), correctIndex, correctText, explanation, newIdentity, quality]);
+        } catch (error) {
+          warning = ` Saved, but the source correction was not recorded (${error.message}).`;
+        }
+      }
+      status(target, `Saved #${id}.${warning}`, warning ? 'bad' : 'good');
+      editor.close();
+      if (editorReload) editorReload();
+    } catch (error) {
+      status(target, error.message, 'bad');
+    } finally {
+      $('#editorSave').disabled = false;
+    }
+  });
+
+  /* ---------------------------------------------------------------- tabs */
+
+  function switchTab(name) {
+    state.tab = name;
+    $$('#tabs button').forEach(button => button.classList.toggle('on', button.dataset.tab === name));
+    $$('main > section').forEach(section => { section.hidden = section.id !== `tab-${name}`; });
+    if (name === 'overview') loadOverview();
+    if (name === 'dupes') loadDupes(0);
+    if (name === 'review') loadReview(0);
+    if (name === 'questions') loadQuestions(0);
+  }
+  $$('#tabs button').forEach(button => { button.onclick = () => switchTab(button.dataset.tab); });
+
+  /* ---------------------------------------------------------------- runs */
+
+  (async () => {
+    const endpoint = 'https://api.github.com/repos/abhyasapp/DRIVETONEONTODRIVE/actions/workflows/daily_pipeline.yml/runs?per_page=6';
+    const runsElement = $('#runs');
+    const stateElement = $('#runsState');
+    const date = value => {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? 'time unavailable' : parsed.toLocaleString();
+    };
+    const kindFor = run => run.status !== 'completed' ? 'running'
+      : (run.conclusion === 'success' ? 'success' : 'failure');
+    const labelFor = run => run.status !== 'completed' ? 'Running'
+      : String(run.conclusion || 'completed').replaceAll('_', ' ');
+    try {
+      const response = await fetch(endpoint, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+      const data = await response.json();
+      const runs = data.workflow_runs || [];
+      if (!runs.length) throw new Error('No workflow runs found.');
+      stateElement.innerHTML = `<span class="dot ${kindFor(runs[0])}"></span>${esc(labelFor(runs[0]))}`;
+      runsElement.innerHTML = runs.map(run => {
+        const title = run.display_title || run.name || 'Daily Pipeline';
+        const sha = String(run.head_sha || '').slice(0, 7);
+        const details = `Run #${run.run_number} · ${run.head_branch || 'branch unknown'}${sha ? ` · ${sha}` : ''} · ${date(run.created_at)}`;
+        return `<article class="run">
+          <a class="run-title" href="${esc(run.html_url)}" target="_blank" rel="noopener">${esc(title)}</a>
+          <div class="run-meta"><small>${esc(details)}</small>
+          <span class="badge"><span class="dot ${kindFor(run)}"></span>${esc(labelFor(run))}</span></div>
+        </article>`;
+      }).join('');
+    } catch (error) {
+      stateElement.innerHTML = '<span class="dot"></span>Unavailable';
+      runsElement.innerHTML = `<div class="empty">Could not load public run status: ${esc(error.message)}. Use the Actions link above.</div>`;
+    }
+  })();
+
+  /* ---------------------------------------------------------------- boot */
+
+  setConnected(false);
+  const stored = sessionStorage.getItem('abhyas.dsn');
+  if (stored) {
+    $('#dsn').value = stored;
+    connect(stored, true);
+  }
+})();
+</script>
+</body>
+</html>
