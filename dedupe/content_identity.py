@@ -128,8 +128,19 @@ def identity(stem, options):
     ).hexdigest()
 
 
+_LETTER_HYPHEN_RE = re.compile(r"(?<=[a-z])-(?=[a-z])")
+_SPACED_HYPHEN_RE = re.compile(r"\s*-\s*")
+
+
 def canonical_answer(s):
-    return _canonical(s).replace(" ", "")
+    """Answer text without spaces or typographic hyphens.
+
+    "back-sight", "back - sight" and "back sight" are the same answer, so a
+    hyphen joining two letters is dropped. Numeric hyphens are kept: "5-10%"
+    is a range, not the number "510".
+    """
+    text = _SPACED_HYPHEN_RE.sub("-", _canonical(s))
+    return _LETTER_HYPHEN_RE.sub("", text).replace(" ", "")
 
 
 def answer_identity(correct_text=None, correct_index=None, options=None):

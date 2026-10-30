@@ -98,7 +98,12 @@
   }
 
   function canonicalAnswer(value) {
-    return canonical(value).replace(/ /g, '');
+    // A hyphen joining two letters is typography ("back-sight" == "back sight");
+    // a numeric hyphen is kept because "5-10%" is a range, not 510%.
+    return canonical(value)
+      .replace(/\s*-\s*/g, '-')
+      .replace(/([a-z])-(?=[a-z])/g, '$1')
+      .replace(/ /g, '');
   }
 
   function answerKey(correctText, correctIndex, options) {

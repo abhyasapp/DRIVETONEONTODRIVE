@@ -176,6 +176,9 @@ VALUES (1, ${keeper}, ${twin}, 99, 99);
 `);
 
 // -- answer key matches the Python/JS answer identity --------------------------
+const SIGHT = JSON.stringify(['foresight', 'intermediate sight', 'back-sight', 'any sight']);
+const RANGE = JSON.stringify(['2-3%', '5-10%', '10-15%', 'none']);
+
 const answerKeySql = async (text, index, options) => {
   const value = await rows('SELECT abhyas_answer_key($1,$2,$3::jsonb) AS k', [text, index, options]);
   return value[0].k;
@@ -193,9 +196,22 @@ for (const vector of [
   { text: null, index: 5, options: NEWTON },
   { text: '  newton ', index: null, options: NEWTON },
   { text: null, index: null, options: '[]' },
+  // typographic hyphen joined vs spaced vs absent must collapse to one key;
+  // a numeric range must keep its hyphen
+  { text: 'back-sight', index: null, options: SIGHT },
+  { text: 'back - sight', index: null, options: SIGHT },
+  { text: null, index: 2, options: SIGHT },
+  { text: 'back sight', index: 2, options: SIGHT },
+  { text: '5-10%', index: null, options: RANGE },
+  { text: '5 - 10%', index: null, options: RANGE },
+  { text: '1-2 m', index: null, options: RANGE },
 ]) {
   await compare(vector);
 }
+check('hyphenated and spaced answer agree',
+  await answerKeySql('back-sight', null, SIGHT) === await answerKeySql('back sight', null, SIGHT));
+check('numeric range keeps its hyphen',
+  (await answerKeySql('5-10%', null, RANGE)) !== (await answerKeySql('510%', null, RANGE)));
 
 // -- group merge --------------------------------------------------------------
 const group = await rows('SELECT abhyas_merge_exact_group(1, $1) AS result', ['aaa']);

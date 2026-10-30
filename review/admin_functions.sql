@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS review_deletions (
 -- Canonical answer identity. Must stay in step with
 -- dedupe/content_identity.answer_identity: lowercase, drop punctuation and
 -- whitespace, keep +-*/=<>^%~, and refuse inconsistent answer data.
+-- One canonical answer string. A hyphen joining two letters is typography, so
+-- "back-sight" equals "back sight"; a numeric hyphen is kept, because
+-- "5-10%" is a range and must not collapse into "510%".
+CREATE OR REPLACE FUNCTION abhyas_answer_norm(p_value text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT regexp_replace(
+               regexp_replace(
+                   regexp_replace(lower(coalesce(p_value, '')), '\s*-\s*', '-', 'g'),
+                   '([a-z])-(?=[a-z])', '\1', 'g'),
+               '[^a-z0-9=+*/<>^%~-]', '', 'g')
+$fn$;
+
 CREATE OR REPLACE FUNCTION abhyas_answer_key(
     p_correct_text text,
     p_correct_index integer,
@@ -71,15 +83,15 @@ LANGUAGE sql IMMUTABLE AS $fn$
              AND p_options IS NOT NULL
              AND jsonb_typeof(p_options) = 'array'
              AND nullif(btrim(coalesce(p_correct_text, '')), '') IS NOT NULL
-             AND regexp_replace(lower(p_correct_text), '[^a-z0-9=+*/<>^%~-]', '', 'g')
-                 <> regexp_replace(lower(p_options ->> p_correct_index), '[^a-z0-9=+*/<>^%~-]', '', 'g')
+             AND abhyas_answer_norm(p_correct_text)
+                 <> abhyas_answer_norm(p_options ->> p_correct_index)
             THEN '__answer_conflict__'
         WHEN nullif(btrim(coalesce(p_correct_text, '')), '') IS NOT NULL
-            THEN regexp_replace(lower(p_correct_text), '[^a-z0-9=+*/<>^%~-]', '', 'g')
+            THEN abhyas_answer_norm(p_correct_text)
         WHEN p_correct_index IS NOT NULL
              AND p_options IS NOT NULL
              AND jsonb_typeof(p_options) = 'array'
-            THEN regexp_replace(lower(p_options ->> p_correct_index), '[^a-z0-9=+*/<>^%~-]', '', 'g')
+            THEN abhyas_answer_norm(p_options ->> p_correct_index)
         ELSE '__unanswered__'
     END
 $fn$;

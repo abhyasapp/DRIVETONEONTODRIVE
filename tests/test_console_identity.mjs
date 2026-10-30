@@ -61,6 +61,11 @@ answers = [
     (None, 5, ["Newton", "Joule"]),
     ("  newton ", None, ["Newton", "Joule"]),
     (None, None, []),
+    ("back-sight", None, ["foresight", "intermediate sight", "back-sight", "any sight"]),
+    (None, 2, ["foresight", "intermediate sight", "back sight", "any sight"]),
+    ("back  -  sight", None, ["foresight"]),
+    ("5-10%", None, ["2-3%", "5-10%"]),
+    ("1-2 m", None, ["1-2 m", "12 m"]),
 ]
 
 out = {"identity": [], "answer": [], "location": [], "quality": []}
