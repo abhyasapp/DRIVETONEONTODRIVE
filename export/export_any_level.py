@@ -4,10 +4,10 @@ export_any_level.py  (v2)
 -------------------------
 Exports classified questions to JSON, one subtopic per folder.
 
-Part splitting: by default each question keeps its part across runs via
-stable hash of its DB id, so adding/removing one question only rewrites
-the files that question actually lands in — everything else re-uploads
-unchanged.Use --sequential-parts for the old 1..50 slice behaviour.
+Part splitting: every part holds MAX_PER_FILE (50) questions in list
+order and only the last part carries the remainder, so a subtopic with
+137 questions becomes 50 / 50 / 37. --stable-parts keeps each question
+in the same file across runs via a hash of its DB id instead.
 
 Layout on disk:
 
@@ -85,24 +85,25 @@ def _qid_hash(qid):
     return int(hashlib.md5(str(qid).encode("utf-8")).hexdigest()[:8], 16)
 
 
-def partition_items(items, max_per_file, stable=True):
+def partition_items(items, max_per_file, stable=False):
     """
     Split a subtopic's ordered items into file payloads.
+
+    Default: full parts of max_per_file in list order and the last part
+    takes the remainder — 137 items become 50 / 50 / 37.
 
     stable=True: every item's part is (hash(qid) % n_parts), so a question
     keeps its file across runs as long as the file count itself doesn't
     change. Parts may be uneven; an unlucky empty part falls back to the
-    sequential slice.
-
-    stable=False: classic sequential chunking (part 1 = first 50, ...).
+    ordered slice.
     """
     n = len(items)
     if n == 0:
         return []
     if n <= max_per_file:
         return [items]
-    n_parts = (n + max_per_file - 1) // max_per_file
     if stable:
+        n_parts = (n + max_per_file - 1) // max_per_file
         buckets = [[] for _ in range(n_parts)]
         for item in items:
             buckets[_qid_hash(item[0]) % n_parts].append(item)
@@ -214,7 +215,7 @@ def group_rows(rows):
 # ── export ───────────────────────────────────────────────────────────────
 
 def export_level(cur, level_key, include_unanswered, dry_run,
-                 sequential_parts=False):
+                 stable_parts=False):
     cur.execute("SELECT id, label FROM levels WHERE level_key = %s", (level_key,))
     row = cur.fetchone()
     if not row:
@@ -266,7 +267,7 @@ def export_level(cur, level_key, include_unanswered, dry_run,
                 if not items:
                     continue
                 chunks = partition_items(items, MAX_PER_FILE,
-                                         stable=not sequential_parts)
+                                         stable=stable_parts)
                 n_parts = len(chunks)
 
                 # every subtopic gets its own folder: "<code> <title>"
@@ -312,9 +313,10 @@ def parse_args():
     p = argparse.ArgumentParser(description="Export classified questions.")
     p.add_argument("target", help="level_key or 'all'")
     p.add_argument("--include-unanswered", action="store_true")
-    p.add_argument("--sequential-parts", action="store_true",
-                   help="Use old sequential 1..50 chunking instead of "
-                        "stable per-question part assignment.")
+    p.add_argument("--stable-parts", action="store_true",
+                   help="Assign each question to a part by a hash of its "
+                        "DB id instead of filling 50-question parts in "
+                        "order.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -342,7 +344,7 @@ def main():
     for lv in levels:
         try:
             f, q = export_level(cur, lv, args.include_unanswered, args.dry_run,
-                                sequential_parts=args.sequential_parts)
+                                stable_parts=args.stable_parts)
             total_files += f
             total_q += q
         except Exception as e:

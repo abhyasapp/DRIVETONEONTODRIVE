@@ -43,9 +43,10 @@ python -m pipeline.run_pipeline --skip-gemini
 
 Exit codes: `0` ok, `1` a step failed, `2` pre-flight failed, `3` dedupe aborted.
 FATAL steps (turn the whole run red): `dedupe`, `export`, `upload`.
-Export splits parts stably: each question keeps its file across runs
-(hash of its DB id) so unchanged questions are not re-uploaded;
-`--sequential-parts` restores the old 1..50 slicing.
+Export splits each subtopic into parts of 50 questions in order and only the
+last part carries the remainder (137 questions -> 50 / 50 / 37).
+`--stable-parts` assigns each question to a part by a hash of its DB id
+instead, which keeps unchanged questions in the same file across runs.
 
 ## Hosted admin console (`index.html`)
 
@@ -105,7 +106,7 @@ Safety built into `review/admin_functions.sql` (enforced in Postgres, not the pa
 Console checks (Node, no database server needed — PGlite is a WASM Postgres):
 
 ```bash
-node tests/test_console_identity.mjs   # JS identity == Python identity (63 vectors)
+node tests/test_console_identity.mjs   # JS identity == Python identity (126 vectors)
 node tests/test_admin_sql.mjs          # SQL helpers + every console query on real Postgres
 ```
 
