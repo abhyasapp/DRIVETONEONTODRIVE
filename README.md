@@ -54,10 +54,17 @@ duplicate-review console. Pages serves it as a static file, so there is no serve
 the page talks to Neon's HTTPS SQL endpoint (`https://<project-host>/sql`) straight
 from your browser.
 
-- **Overview** — questions / files / chapters per level, reducible duplicates, last run.
-- **Duplicates** — pending review groups, side-by-side compare, edit, merge, delete.
-- **Health** — unanswered, thin-option, duplicate-content and tombstone counts.
-- **Runs** — the six most recent workflow runs with their result and duration, plus a
+- **Overview** — live counts, reducible duplicates, level and classification breakdown.
+- **Verify** — structural checks (unanswered, out-of-range answer index, empty options).
+- **Exact duplicates** — identical identity inside one chapter; merge the copies that
+  share one answer in a single click.
+- **Near duplicates** — the fuzzy queue: side-by-side compare, edit, merge, delete,
+  reject, and **Merge all agreeing** — one audited sweep that merges every pending pair
+  whose two copies already resolve to the same answer, in chunks, leaving unanswered and
+  conflicting pairs for a human. The queue filter (all / answers agree / conflicts only)
+  lets you work one class at a time.
+- **Questions** — search, filter (unanswered / duplicate members / human-corrected), edit, delete.
+- **Pipeline history** — the six most recent workflow runs with result and duration, plus a
   link to the full run log and the `pipeline-logs-<run_id>` artifact (7-day retention).
 
 One-time setup per database: paste the Neon connection string, then **Install merge
@@ -70,6 +77,24 @@ Safety built into `review/admin_functions.sql` (enforced in Postgres, not the pa
 
 - a merge refuses pairs from different chapters, pairs where either answer is missing,
   and pairs whose correct answers disagree;
+- "disagree" is decided by `abhyas_answers_equivalent`, so a source typo is not a
+  disagreement: `Gnatt chart` / `Gantt chart` and `all the above` / `all of the above`
+  merge, while `increase` / `decrease`, `2-3%` / `3-4%`, and `2/5mr²` / `2/5mr` never do.
+  Digits, signs and non-ASCII symbols must match exactly and the letters must start and
+  end the same, which is what keeps the rule safe. The same logic lives in
+  `dedupe/content_identity.py` and `review/identity.js`; the three stay in parity.
+- a merge a **reviewer clicks by hand** is allowed a little further: `abhyas_answers_mergeable`
+  accepts answers that are at least 80% alike (`MERGE_SIMILARITY`) while still requiring
+  the same first and last character, so `2-3% of estmated amount` / `2-3% of estimated
+  amount` (94%) merge, but `increase` / `decrease` (87% alike, opposite meaning) do not.
+  The console shows the percentage on the pair and writes it into the candidate's review
+  note. The unattended sweeps — `abhyas_merge_agreeing_candidates` and the pipeline's
+  exact-group merge — keep using the strict typo rule, so nothing merges at 80% without
+  a person pressing the button.
+- `abhyas_merge_agreeing_candidates(limit, dry_run)` applies the same rules to the whole
+  queue: the two answer keys are compared in SQL, the keeper is the human-corrected copy
+  (then higher quality score, then older id), a refusal is recorded on the candidate, and
+  `dry_run` reports what would merge without touching a row;
 - the deleted row is snapshotted into `dedup_deletions` and the source location into
   `dedupe_source_tombstones`, so a later Drive sync of the same file resolves the old
   question to the keeper instead of resurrecting it;
@@ -80,7 +105,7 @@ Safety built into `review/admin_functions.sql` (enforced in Postgres, not the pa
 Console checks (Node, no database server needed — PGlite is a WASM Postgres):
 
 ```bash
-node tests/test_console_identity.mjs   # JS identity == Python identity (58 vectors)
+node tests/test_console_identity.mjs   # JS identity == Python identity (63 vectors)
 node tests/test_admin_sql.mjs          # SQL helpers + every console query on real Postgres
 ```
 

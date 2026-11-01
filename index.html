@@ -177,6 +177,12 @@
           <div class="muted">Fuzzy candidates found by the pipeline. Similarity is not proof — read both, then merge into the better copy, reject, or edit first.</div>
         </div>
         <div class="row">
+          <button class="button primary" id="bulkMerge" disabled title="Merge every pending pair whose two copies already share one identical answer">Merge all agreeing</button>
+          <select id="reviewFilter" aria-label="Queue filter">
+            <option value="all">All pairs</option>
+            <option value="agreeing">Answers agree</option>
+            <option value="conflicts">Conflicts only</option>
+          </select>
           <select id="reviewStatus" aria-label="Candidate status">
             <option value="pending">Pending</option>
             <option value="rejected">Rejected</option>
@@ -187,6 +193,7 @@
           <button class="button ghost" id="reviewNext">Next ›</button>
         </div>
       </div>
+      <div id="reviewBulk" class="status"></div>
       <div id="reviewList"><div class="empty">Loading…</div></div>
     </section>
 
@@ -304,6 +311,25 @@
     element.className = `status${kind ? ` ${kind}` : ''}`;
   };
 
+  // Postgres jsonb arrives as a string from the Neon endpoint but already parsed
+  // when a local query returns it; accept both shapes.
+  const asJson = value => {
+    if (value === null || value === undefined || value === '') return {};
+    if (typeof value === 'string') {
+      try { return JSON.parse(value); } catch { return {}; }
+    }
+    return value;
+  };
+
+  // The answer as a reader sees it: the stored text, else the ticked option.
+  const resolvedAnswer = copy => {
+    const options = Array.isArray(copy.options) ? copy.options : [];
+    const text = String(copy.correct_text === null || copy.correct_text === undefined ? '' : copy.correct_text).trim();
+    if (text) return text;
+    const index = Number(copy.correct_index);
+    return Number.isInteger(index) && index >= 0 && index < options.length ? String(options[index]) : '';
+  };
+
   const decodeCell = (name, value) => {
     if (value === null || value === undefined) return null;
     if (JSON_COLUMNS.has(name) && typeof value === 'string') {
@@ -416,6 +442,7 @@
       for (const statement of statements) await sql(statement);
       state.helpers = true;
       status(target, `Helpers installed (${statements.length} statements)`, 'good');
+      if (state.tab === 'review') await loadReview(state.reviewOffset);
     } catch (error) {
       status(target, `Install failed: ${error.message}`, 'bad');
     }
@@ -779,10 +806,22 @@
     state.reviewOffset = Math.max(0, offset);
     const target = $('#reviewList');
     target.innerHTML = '<div class="empty">Loading…</div>';
+    $('#bulkMerge').disabled = !state.helpers;
     const wanted = $('#reviewStatus').value;
+    // The queue can be worked one class at a time: pairs that can merge today,
+    // or only the ones that need a decision.
+    const keyOne = 'abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options)';
+    const keyTwo = 'abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options)';
+    const filter = $('#reviewFilter').value;
+    let filterSql = '';
+    if (state.helpers && filter === 'agreeing') filterSql = ` AND abhyas_answers_equivalent(${keyOne}, ${keyTwo})`;
+    if (state.helpers && filter === 'conflicts') filterSql = ` AND NOT abhyas_answers_equivalent(${keyOne}, ${keyTwo})`;
     try {
-      const total = num((await sqlOne(
-        `SELECT count(*)::int AS n FROM dedupe_review_candidates WHERE status = $1`, [wanted])).n);
+      const total = num((await sqlOne(`SELECT count(*)::int AS n
+        FROM dedupe_review_candidates d
+        JOIN questions q1 ON q1.id = d.q1_id
+        JOIN questions q2 ON q2.id = d.q2_id
+        WHERE d.status = $1${filterSql}`, [wanted])).n);
       const rows = await sql(`
         SELECT d.id, d.chapter_id, d.q1_id, d.q2_id,
                d.stem_score::float AS stem_score, d.options_score::float AS options_score,
@@ -797,7 +836,7 @@
         JOIN questions q1 ON q1.id = d.q1_id
         JOIN questions q2 ON q2.id = d.q2_id
         LEFT JOIN chapters c ON c.id = d.chapter_id
-        WHERE d.status = $1
+        WHERE d.status = $1${filterSql}
         ORDER BY d.stem_score DESC, d.options_score DESC, d.id
         LIMIT 20 OFFSET $2`, [wanted, state.reviewOffset]);
 
@@ -811,7 +850,23 @@
         const firstKey = Identity.answerKey(first.correct_text, first.correct_index, Array.isArray(first.options) ? first.options : []);
         const secondKey = Identity.answerKey(second.correct_text, second.correct_index, Array.isArray(second.options) ? second.options : []);
         const bothAnswered = !firstKey.startsWith('__') && !secondKey.startsWith('__');
-        const agree = bothAnswered && firstKey === secondKey;
+        const exactMatch = bothAnswered && firstKey === secondKey;
+        // Typos in the source books are the same answer, so "Gnatt chart" and
+        // "Gantt chart" are mergeable; "2-3%" and "3-4%" never are.
+        const agree = bothAnswered && Identity.answersEquivalent(firstKey, secondKey);
+        // A reviewer may also merge answers that are close but not typo-close:
+        // 80% alike is allowed by hand, never by the unattended sweeps.
+        const similar = bothAnswered ? Identity.answerSimilarity(firstKey, secondKey) : 0;
+        const similarPercent = (similar * 100).toFixed(0);
+        const mergeable = bothAnswered && Identity.answersMergeable(firstKey, secondKey);
+        const answerChip = agree
+          ? `<span class="chip ok">${exactMatch ? 'answers agree' : 'same answer, typo'}</span>`
+          : mergeable ? `<span class="chip warn">answers ${similarPercent}% similar</span>`
+            : bothAnswered ? '<span class="chip bad">answers differ</span>'
+              : '<span class="chip bad">answer missing</span>';
+        const why = !bothAnswered
+          ? `One copy has no usable answer (#${num(row.q1_id)}: ${esc(resolvedAnswer(first) || 'none')} · #${num(row.q2_id)}: ${esc(resolvedAnswer(second) || 'none')}). Pick the correct option with Edit on that copy, then merge — explanations are never compared.`
+          : `Answers differ: #${num(row.q1_id)} “${esc(resolvedAnswer(first))}” vs #${num(row.q2_id)} “${esc(resolvedAnswer(second))}” — ${similarPercent}% similar, below the 80% a manual merge needs. Options and explanations are never part of the check. If the two really are different questions, use “Not a duplicate” instead.`;
         return `<div class="copy">
           <div class="hdr">
             <b>Candidate ${num(row.id)}</b>
@@ -819,17 +874,19 @@
             <span>stem ${num(row.stem_score).toFixed(1)}%</span>
             <span>options ${num(row.options_score).toFixed(1)}%</span>
             <span class="chip ${row.status === 'pending' ? 'warn' : ''}">${esc(row.status)}</span>
-            ${agree ? '<span class="chip ok">answers agree</span>' : bothAnswered ? '<span class="chip bad">answers differ</span>' : '<span class="chip bad">answer missing</span>'}
+            ${answerChip}
           </div>
           ${renderCopies([first, second])}
           <div class="row">
-            <button class="button primary" data-merge-a="${num(row.id)}" ${agree && state.helpers ? '' : 'disabled'}>Merge into #${num(row.q1_id)}</button>
-            <button class="button" data-merge-b="${num(row.id)}" ${agree && state.helpers ? '' : 'disabled'}>Merge into #${num(row.q2_id)}</button>
+            <button class="button primary" data-merge-a="${num(row.id)}" ${mergeable && state.helpers ? '' : 'disabled'}>Merge into #${num(row.q1_id)}</button>
+            <button class="button" data-merge-b="${num(row.id)}" ${mergeable && state.helpers ? '' : 'disabled'}>Merge into #${num(row.q2_id)}</button>
             <button class="button ghost" data-reject="${num(row.id)}" ${row.status === 'pending' ? '' : 'disabled'}>Not a duplicate</button>
             <button class="button ghost" data-edit="${num(row.q1_id)}">Edit #${num(row.q1_id)}</button>
             <button class="button ghost" data-edit="${num(row.q2_id)}">Edit #${num(row.q2_id)}</button>
           </div>
-          ${agree ? '' : '<div class="callout">Merging needs one verified, identical answer on both copies. Fix the answer with Edit, then merge.</div>'}
+          ${agree ? '' : mergeable
+            ? `<div class="callout">Answers are ${similarPercent}% similar, not identical. Merging keeps one copy and deletes the other — read both answers first; this is your call, not the pipeline's.</div>`
+            : `<div class="callout">${why}</div>`}
         </div>`;
       }).join('') : '<div class="empty">Nothing in this queue.</div>';
 
@@ -857,8 +914,59 @@
     }
   }
   $('#reviewStatus').onchange = () => loadReview(0);
+  $('#reviewFilter').onchange = () => loadReview(0);
   $('#reviewPrev').onclick = () => loadReview(state.reviewOffset - 20);
   $('#reviewNext').onclick = () => loadReview(state.reviewOffset + 20);
+
+  // One audited sweep over the queue: merges every pending pair whose two copies
+  // already agree on one answer, in chunks, and leaves the rest for a human.
+  async function bulkMergeAgreeing() {
+    const note = $('#reviewBulk');
+    const button = $('#bulkMerge');
+    if (!state.helpers) {
+      status(note, 'Install the review helpers first — the bulk merge runs inside Postgres.', 'bad');
+      return;
+    }
+    button.disabled = true;
+    try {
+      status(note, 'Counting pairs that already agree…', 'busy');
+      const preview = asJson((await sqlOne(
+        `SELECT abhyas_merge_agreeing_candidates($1, true) AS result`, [100000])).result);
+      const ready = num(preview.matched);
+      if (!ready) {
+        status(note, 'No pending pair has two identical answers right now. Edit an answer, or review the conflicts by hand.', 'good');
+        return;
+      }
+      const go = confirm(`Merge ${fmt(ready)} pair(s) whose two copies share exactly the same answer?\n\n`
+        + 'The better copy is kept: human-corrected first, then the higher quality score, then the older id.\n'
+        + 'Unanswered and conflicting pairs stay in the queue.\n'
+        + 'Every merge writes a full snapshot to dedup_deletions, so it can be traced and undone.');
+      if (!go) { status(note, 'Nothing merged. The queue is unchanged.'); return; }
+
+      let merged = 0;
+      let failed = 0;
+      for (let round = 0; round < 200; round += 1) {
+        const chunk = asJson((await sqlOne(
+          `SELECT abhyas_merge_agreeing_candidates($1, false) AS result`, [100])).result);
+        merged += num(chunk.merged);
+        failed += num(chunk.failed);
+        status(note, `Merging… ${fmt(merged)} of ${fmt(ready)}${failed ? ` · ${fmt(failed)} refused` : ''}`, 'busy');
+        if (!num(chunk.matched) || !num(chunk.merged)) break;
+      }
+
+      const left = num((await sqlOne(
+        `SELECT count(*)::int AS n FROM dedupe_review_candidates WHERE status = 'pending'`)).n);
+      status(note, `Merged ${fmt(merged)} pair(s)${failed ? `, ${fmt(failed)} refused (open the pair to read why)` : ''}.`
+        + ` ${fmt(left)} pair(s) still need a decision.`, failed ? 'bad' : 'good');
+      await loadReview(0);
+      await loadOverview();
+    } catch (error) {
+      status(note, error.message, 'bad');
+    } finally {
+      button.disabled = !state.helpers;
+    }
+  }
+  $('#bulkMerge').onclick = bulkMergeAgreeing;
 
   async function mergeCandidate(candidateId, side, reload) {
     if (!confirm('Merge these two questions? The other copy is deleted and an audit snapshot is kept.')) return;
@@ -869,8 +977,18 @@
       const duplicate = side === 'a' ? num(row.q2_id) : num(row.q1_id);
       const signature = (side === 'a' ? row.q1_identity_key : row.q2_identity_key) || 'manual';
       await sqlOne(`SELECT abhyas_merge_questions($1, $2, 'manual_near', $3) AS result`, [keeper, duplicate, signature]);
+      // Record how alike the two answers were, so an 80%-similar merge can be
+      // found and undone later; the duplicate row is gone after this call.
+      const keys = await sqlOne(`SELECT abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options) AS k1,
+          abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options) AS k2
+        FROM dedupe_review_candidates d
+        JOIN questions q1 ON q1.id = d.q1_id
+        JOIN questions q2 ON q2.id = d.q2_id
+        WHERE d.id = $1`, [candidateId]).catch(() => null);
+      const percent = keys ? (Identity.answerSimilarity(keys.k1, keys.k2) * 100).toFixed(1) : 'n/a';
       await sql(`UPDATE dedupe_review_candidates SET status = 'merged', reviewed_at = now(),
-        review_note = 'merged into #' || $2 WHERE id = $1`, [candidateId, keeper]);
+        review_note = 'merged into #' || $2 || ' (answers ' || $3 || '% similar)' WHERE id = $1`,
+        [candidateId, keeper, percent]);
       reload();
     } catch (error) {
       alert(error.message);

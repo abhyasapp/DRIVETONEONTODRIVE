@@ -522,12 +522,15 @@ def api_apply_exact(body):
         duplicate_answer = duplicate_reviews._answer_key(dup[3],dup[4],dup[2])
         if keeper_answer.startswith("__") or duplicate_answer.startswith("__"):
             return {"ok":False,"error":"both questions need valid, consistent answers before merging"}
-        if keeper_answer != duplicate_answer:
-            return {"ok":False,"error":"answer conflict; correct the answers before merging"}
+        from dedupe.content_identity import answers_mergeable
+        from dedupe.content_identity import MERGE_SIMILARITY
+        if not answers_mergeable(keeper_answer, duplicate_answer):
+            return {"ok":False,"error":"answers differ too much to merge; at least 80% alike is required"}
         from dedupe.merge_questions import discover_question_child_fks,merge_question_rows
         merge_question_rows(cur,keeper_id,duplicate_id,reason="review_exact",
             signature=identity(keeper[1],keeper[2] or []),
-            child_fks=discover_question_child_fks(cur))
+            child_fks=discover_question_child_fks(cur),
+            min_answer_similarity=MERGE_SIMILARITY)
         return {"ok":True,"keeper_id":keeper_id,"deleted_id":duplicate_id}
 
     return _review_write(apply,body)

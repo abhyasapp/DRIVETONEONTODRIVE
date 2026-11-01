@@ -97,10 +97,27 @@
     return sha256Hex(pythonJson([canonical(bookName), canonical(subtopic)], true));
   }
 
+  /* Answer text keeps meaning-bearing symbols ('40°' is not '40'), so unlike
+   * canonical() it does not drop non-ASCII characters. Mirrors _answer_text(). */
+  function answerText(value) {
+    if (value === null || value === undefined) return '';
+    let text = String(value).normalize('NFC').replace(INVISIBLE, '');
+    let mapped = '';
+    for (const ch of text) mapped += PUNCTUATION[ch] !== undefined ? PUNCTUATION[ch] : ch;
+    mapped = mapped.toLowerCase();
+    let out = '';
+    for (const ch of mapped) {
+      if (/\s/.test(ch)) out += ' ';
+      else if (ALNUM.test(ch) || KEEP_SYMBOLS.includes(ch)) out += ch;
+      else if (ch.codePointAt(0) > 127) out += ch;
+    }
+    return out.replace(WHITESPACE, ' ').trim();
+  }
+
   function canonicalAnswer(value) {
     // A hyphen joining two letters is typography ("back-sight" == "back sight");
     // a numeric hyphen is kept because "5-10%" is a range, not 510%.
-    return canonical(value)
+    return answerText(value)
       .replace(/\s*-\s*/g, '-')
       .replace(/([a-z])-(?=[a-z])/g, '$1')
       .replace(/ /g, '');
@@ -124,6 +141,81 @@
     return '__unanswered__';
   }
 
+  /* Levenshtein distance of at most limit; aborts early on a length gap. */
+  function withinEdits(a, b, limit) {
+    if (Math.abs(a.length - b.length) > limit) return false;
+    let previous = Array.from({ length: a.length + 1 }, (_, index) => index);
+    for (let j = 1; j <= b.length; j += 1) {
+      const current = [j];
+      for (let i = 1; i <= a.length; i += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        current.push(Math.min(current[i - 1] + 1, previous[i] + 1, previous[i - 1] + cost));
+      }
+      previous = current;
+    }
+    return previous[a.length] <= limit;
+  }
+
+  /* Typos in the source books are not different answers: "Gnatt chart" and
+   * "Gantt chart" are one answer, but "increase" and "decrease" never merge,
+   * because the letters must start and end the same and every digit must match.
+   * Mirrors answers_equivalent() in dedupe/content_identity.py. */
+  function answersEquivalent(keyA, keyB) {
+    if (!keyA || !keyB) return false;
+    if (keyA.startsWith('__') || keyB.startsWith('__')) return false;
+    if (keyA === keyB) return true;
+    // Digits, signs and non-ASCII symbols must match exactly: "2/5mr²" is not "2/5mr".
+    const figures = value => value.replace(/[a-z]/g, '');
+    if (figures(keyA) !== figures(keyB)) return false;
+    const letters = value => (value.match(/[a-z]+/g) || []).join('');
+    const left = letters(keyA);
+    const right = letters(keyB);
+    if (left === right) return true;
+    if (left.length < 5 || right.length < 5) return false;
+    if (left[0] !== right[0] || left[left.length - 1] !== right[right.length - 1]) return false;
+    return withinEdits(left, right, Math.max(left.length, right.length) >= 9 ? 2 : 1);
+  }
+
+  /* From here up, a merge a reviewer clicks by hand is allowed. Merges made
+   * without a human in the loop stay on answersEquivalent() only. */
+  const MERGE_SIMILARITY = 0.8;
+
+  /* Levenshtein distance between two canonical answers. */
+  function editDistance(a, b) {
+    if (a === b) return 0;
+    let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+    for (let i = 1; i <= a.length; i += 1) {
+      const current = [i];
+      for (let j = 1; j <= b.length; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        current.push(Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + cost));
+      }
+      previous = current;
+    }
+    return previous[b.length];
+  }
+
+  /* How alike two canonical answers are: 1 identical, 0 unrelated.
+   * Mirrors answers_similarity() in dedupe/content_identity.py. */
+  function answerSimilarity(keyA, keyB) {
+    if (!keyA || !keyB) return 0;
+    if (keyA.startsWith('__') || keyB.startsWith('__')) return 0;
+    const span = Math.max(keyA.length, keyB.length);
+    if (!span) return 0;
+    return 1 - editDistance(keyA, keyB) / span;
+  }
+
+  /* True when a reviewer may merge these two answers: a typo always, and
+   * anything at least 80% alike when a person makes the call. */
+  function answersMergeable(keyA, keyB, threshold) {
+    if (answersEquivalent(keyA, keyB)) return true;
+    if (!keyA || !keyB) return false;
+    if (keyA.startsWith('__') || keyB.startsWith('__')) return false;
+    // "increase" / "decrease" are 87% alike but opposite, so the ends must match.
+    if (keyA[0] !== keyB[0] || keyA[keyA.length - 1] !== keyB[keyB.length - 1]) return false;
+    return answerSimilarity(keyA, keyB) >= (threshold === undefined ? MERGE_SIMILARITY : threshold);
+  }
+
   function qualityScore(explanation, options, textLength) {
     let score = 0;
     if (explanation && String(explanation).trim()) score += 20;
@@ -141,6 +233,10 @@
     identity,
     sourceLocationKey,
     answerKey,
+    answersEquivalent,
+    answerSimilarity,
+    answersMergeable,
+    MERGE_SIMILARITY,
     qualityScore,
     pythonJson
   };

@@ -132,6 +132,25 @@ _LETTER_HYPHEN_RE = re.compile(r"(?<=[a-z])-(?=[a-z])")
 _SPACED_HYPHEN_RE = re.compile(r"\s*-\s*")
 
 
+def _answer_text(s):
+    """Canonical answer text, keeping symbols that carry meaning.
+
+    Unlike _canonical (used for the stem hash, where dropping symbols keeps
+    identity stable), an answer must keep "\u00b0" and "\u221a": "40\u00b0" is not
+    "40" and "l/\u221a2" is not "l/2". Non-ASCII characters outside letters and
+    digits therefore survive.
+    """
+    text = unicodedata.normalize("NFC", str(s if s is not None else ""))
+    text = _INVISIBLE_RE.sub("", text).translate(_PUNCT_MAP).lower()
+    out = []
+    for ch in text:
+        if ch.isspace():
+            out.append(" ")
+        elif ch.isalnum() or ch in "+-*/=<>^%~" or ord(ch) > 127:
+            out.append(ch)
+    return _WS_RE.sub(" ", "".join(out)).strip()
+
+
 def canonical_answer(s):
     """Answer text without spaces or typographic hyphens.
 
@@ -139,7 +158,7 @@ def canonical_answer(s):
     hyphen joining two letters is dropped. Numeric hyphens are kept: "5-10%"
     is a range, not the number "510".
     """
-    text = _SPACED_HYPHEN_RE.sub("-", _canonical(s))
+    text = _SPACED_HYPHEN_RE.sub("-", _answer_text(s))
     return _LETTER_HYPHEN_RE.sub("", text).replace(" ", "")
 
 
@@ -163,6 +182,109 @@ def answer_identity(correct_text=None, correct_index=None, options=None):
     if indexed_answer is not None:
         return indexed_answer
     return "__unanswered__"
+
+
+_ANSWER_LETTERS_RE = re.compile(r"[a-z]+")
+
+
+def _within_edits(a, b, limit):
+    """True when the Levenshtein distance between a and b is at most limit."""
+    if abs(len(a) - len(b)) > limit:
+        return False
+    previous = list(range(len(a) + 1))
+    for j, right in enumerate(b, start=1):
+        current = [j]
+        for i, left in enumerate(a, start=1):
+            cost = 0 if left == right else 1
+            current.append(min(current[i - 1] + 1, previous[i] + 1, previous[i - 1] + cost))
+        previous = current
+    return previous[len(a)] <= limit
+
+
+def answers_equivalent(key_a, key_b):
+    """True when two canonical answers mean the same thing, typos included.
+
+    The identity keys are already punctuation-free, so what remains is either a
+    real difference or a misspelling from the source books ("Gnatt chart" vs
+    "Gantt chart", "perfomance" vs "performance"). Only that last class is
+    treated as equal:
+
+    * everything that is not a letter must match exactly — digits, signs and
+      non-ASCII symbols alike — so "5-10%" is never "10-15%", "2" is never
+      "20", and "2/5mr\u00b2" is never "2/5mr";
+    * the letters must start and end with the same character, so "increase" is
+      never "decrease" however close they look;
+    * words shorter than five letters must match exactly;
+    * at most one wrong character up to eight letters, two from nine letters.
+
+    Explanations, images and quality scores are never part of the comparison.
+    """
+    if not key_a or not key_b or key_a.startswith("__") or key_b.startswith("__"):
+        return False
+    if key_a == key_b:
+        return True
+    if _ANSWER_LETTERS_RE.sub("", key_a) != _ANSWER_LETTERS_RE.sub("", key_b):
+        return False
+    letters_a = "".join(_ANSWER_LETTERS_RE.findall(key_a))
+    letters_b = "".join(_ANSWER_LETTERS_RE.findall(key_b))
+    if letters_a == letters_b:
+        return True
+    if len(letters_a) < 5 or len(letters_b) < 5:
+        return False
+    if letters_a[0] != letters_b[0] or letters_a[-1] != letters_b[-1]:
+        return False
+    allowed = 2 if max(len(letters_a), len(letters_b)) >= 9 else 1
+    return _within_edits(letters_a, letters_b, allowed)
+
+
+# From here up, a merge a reviewer clicks by hand is allowed. Merges made
+# without a human in the loop stay on answers_equivalent only.
+MERGE_SIMILARITY = 0.80
+
+
+def _edit_distance(a, b):
+    """Levenshtein distance between two canonical strings."""
+    if a == b:
+        return 0
+    previous = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        current = [i]
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            current.append(min(current[j - 1] + 1, previous[j] + 1,
+                               previous[j - 1] + cost))
+        previous = current
+    return previous[len(b)]
+
+
+def answers_similarity(key_a, key_b):
+    """How alike two canonical answers are: 1.0 identical, 0.0 unrelated."""
+    if not key_a or not key_b or key_a.startswith("__") or key_b.startswith("__"):
+        return 0.0
+    span = max(len(key_a), len(key_b))
+    if not span:
+        return 0.0
+    return 1.0 - (_edit_distance(key_a, key_b) / span)
+
+
+def answers_mergeable(key_a, key_b, threshold=MERGE_SIMILARITY):
+    """True when a reviewer may merge these two answers.
+
+    A typo is the same answer (answers_equivalent). Past that, a merge a
+    person clicks is allowed while the answers are still at least 80% alike,
+    so "2-3% of estmated amount" and "2-3% of estimated amount" (94%) can be
+    joined by hand. Nothing below the threshold passes, and the reviewer sees
+    the percentage and both answers before choosing.
+    """
+    if answers_equivalent(key_a, key_b):
+        return True
+    if not key_a or not key_b or key_a.startswith("__") or key_b.startswith("__"):
+        return False
+    # Two answers that differ only in the middle are often opposites
+    # ("increase"/"decrease", 87% alike), so first and last must match too.
+    if key_a[0] != key_b[0] or key_a[-1] != key_b[-1]:
+        return False
+    return answers_similarity(key_a, key_b) >= threshold
 
 
 def compute_quality_score(explanation, options, text_len):

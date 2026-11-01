@@ -267,7 +267,7 @@ await expectError('refuses a cross-chapter merge',
 await expectError('refuses to merge an unanswered copy',
   db.query('SELECT abhyas_merge_questions($1,$2)', [keeper, blankA]), 'valid, consistent answer');
 await expectError('refuses to merge conflicting answers',
-  db.query('SELECT abhyas_merge_questions($1,$2)', [keeper, conflict]), 'answers conflict');
+  db.query('SELECT abhyas_merge_questions($1,$2)', [keeper, conflict]), 'answers differ too much');
 await expectError('refuses a missing question',
   db.query('SELECT abhyas_merge_questions($1,$2)', [keeper, 999999]), 'no longer exists');
 await expectError('refuses an empty identity group merge',
@@ -439,6 +439,7 @@ const consoleQueries = [
       WHERE q.identity_key IS NOT NULL AND q.canonical_id IS NULL
       GROUP BY 1, 2 HAVING count(*) > 1
         AND count(DISTINCT abhyas_answer_key(q.correct_text, q.correct_index, q.options)) > 1) groups`, []],
+  ['bulk merge dry run', 'SELECT abhyas_merge_agreeing_candidates($1, true) AS result', [100000]],
   ['reject candidate', `UPDATE dedupe_review_candidates SET status = 'rejected', reviewed_at = now(), review_note = coalesce(review_note, 'reviewer: not duplicate') WHERE id = $1`, [1]],
   ['candidate merge lookup', `SELECT q1_id, q2_id, q1_identity_key, q2_identity_key
         FROM dedupe_review_candidates WHERE id = $1`, [1]],
@@ -454,6 +455,190 @@ for (const [label, query, params] of consoleQueries) {
     check(`console query: ${label}`, false, error.message);
   }
 }
+
+// -- bulk merge of agreeing pairs ----------------------------------------------
+// Three queued pairs: one whose answers differ only by a typographic hyphen
+// (must merge), one with genuinely conflicting answers (must stay), one with a
+// missing answer (must stay).
+const SIGHT_OPTIONS = JSON.stringify(['foresight', 'intermediate sight', 'back sight', 'any sight']);
+const agreeLow = await insertQuestion({
+  text: 'The first reading after setting up a level is', options: SIGHT_OPTIONS,
+  index: 2, correctText: null, quality: 10, identity: 'bulk-agree-1', number: 41,
+  sourceIdentity: 'bulk-agree-1', sourceKey: 'bulk:41'
+});
+const agreeHigh = await insertQuestion({
+  text: 'The first reading after setting up a level is', options: SIGHT_OPTIONS,
+  index: 2, correctText: 'back-sight', quality: 25, identity: 'bulk-agree-2', number: 42,
+  sourceIdentity: 'bulk-agree-2', sourceKey: 'bulk:42'
+});
+const conflictLow = await insertQuestion({
+  text: 'Which reading determines the height of the instrument?', options: SIGHT_OPTIONS,
+  index: 2, correctText: null, quality: 10, identity: 'bulk-conflict-1', number: 43,
+  sourceIdentity: 'bulk-conflict-1', sourceKey: 'bulk:43'
+});
+const conflictHigh = await insertQuestion({
+  text: 'Which reading determines the height of the instrument?', options: SIGHT_OPTIONS,
+  index: 0, correctText: null, quality: 12, identity: 'bulk-conflict-2', number: 44,
+  sourceIdentity: 'bulk-conflict-2', sourceKey: 'bulk:44'
+});
+const emptyOne = await insertQuestion({
+  text: 'A level is set up and read immediately', options: SIGHT_OPTIONS,
+  index: null, correctText: null, quality: 0, identity: 'bulk-empty-1', number: 45,
+  sourceIdentity: 'bulk-empty-1', sourceKey: 'bulk:45'
+});
+const emptyTwo = await insertQuestion({
+  text: 'A level is set up and read immediately', options: SIGHT_OPTIONS,
+  index: 1, correctText: null, quality: 4, identity: 'bulk-empty-2', number: 46,
+  sourceIdentity: 'bulk-empty-2', sourceKey: 'bulk:46'
+});
+await db.exec(`
+INSERT INTO dedupe_review_candidates (chapter_id, q1_id, q2_id, stem_score, options_score)
+VALUES (1, ${agreeLow}, ${agreeHigh}, 99, 99),
+       (1, ${conflictLow}, ${conflictHigh}, 97, 97),
+       (1, ${emptyOne}, ${emptyTwo}, 95, 95);
+`);
+
+const dryRun = (await rows('SELECT abhyas_merge_agreeing_candidates($1, true) AS result', [1000]))[0].result;
+check('bulk dry run counts only pairs with one identical answer', dryRun.matched === 1, dryRun);
+check('bulk dry run merges nothing', dryRun.merged === 0, dryRun);
+check('bulk dry run leaves every question in place',
+  Number((await rows('SELECT count(*)::int AS n FROM questions WHERE identity_key LIKE $1', ['bulk-%']))[0].n) === 6,
+  dryRun);
+
+const bulk = (await rows('SELECT abhyas_merge_agreeing_candidates($1, false) AS result', [1000]))[0].result;
+check('bulk merge merges the agreeing pair', bulk.merged === 1, bulk);
+check('bulk merge refuses nothing it selected', bulk.failed === 0, bulk);
+check('bulk merge leaves no agreeing pair behind', bulk.remaining === 0, bulk);
+
+const survivorsBulk = await rows('SELECT id FROM questions WHERE identity_key LIKE $1 ORDER BY id', ['bulk-%']);
+const survivorIds = survivorsBulk.map(row => Number(row.id));
+check('bulk merge keeps the higher-quality copy', survivorIds.includes(Number(agreeHigh)) && !survivorIds.includes(Number(agreeLow)), survivorIds);
+check('bulk merge keeps conflicting and unanswered pairs',
+  survivorIds.includes(Number(conflictLow)) && survivorIds.includes(Number(conflictHigh))
+  && survivorIds.includes(Number(emptyOne)) && survivorIds.includes(Number(emptyTwo)), survivorIds);
+
+const bulkAudit = await rows(`SELECT canonical_id, deleted_id, reason FROM dedup_deletions
+  WHERE signature = 'bulk' ORDER BY id`);
+check('bulk merge writes an audit row with the keeper',
+  bulkAudit.length === 1 && Number(bulkAudit[0].canonical_id) === Number(agreeHigh)
+  && Number(bulkAudit[0].deleted_id) === Number(agreeLow), bulkAudit);
+
+const bulkTombstone = await rows(`SELECT deleted_question_id, keeper_id FROM dedupe_source_tombstones
+  WHERE reason = 'bulk_agreeing'`);
+check('bulk merge tombstones the merged source row',
+  bulkTombstone.length >= 1 && Number(bulkTombstone[0].keeper_id) === Number(agreeHigh), bulkTombstone);
+
+const candidateStates = await rows(`SELECT q1_id, status, review_note FROM dedupe_review_candidates
+  WHERE q1_id IN (${agreeLow}, ${conflictLow}, ${emptyOne}) ORDER BY q1_id`);
+check('bulk merge marks the merged pair and leaves the others pending',
+  candidateStates.length === 3
+  && candidateStates[0].status === 'merged'
+  && /bulk merged into/.test(candidateStates[0].review_note)
+  && candidateStates[1].status === 'pending'
+  && candidateStates[2].status === 'pending', candidateStates);
+
+const limited = (await rows('SELECT abhyas_merge_agreeing_candidates(0, true) AS result'))[0].result;
+check('bulk merge honours a zero limit', limited.matched === 0, limited);
+
+// -- typo-tolerant answer equivalence ------------------------------------------
+const equivalent = async (a, b) =>
+  (await rows('SELECT abhyas_answers_equivalent($1, $2) AS same', [a, b]))[0].same;
+check('typo in an answer is the same answer',
+  await equivalent('gnattchart', 'ganttchart') === true);
+check('one-letter typo in a long answer is the same answer',
+  await equivalent('perfomancesecuritymoney', 'performancesecuritymoney') === true);
+check('opposite words are never the same answer',
+  await equivalent('increase', 'decrease') === false);
+check('short answers must match exactly',
+  await equivalent('rad', 'rod') === false);
+check('different numbers are never the same answer',
+  await equivalent('23%ofestmatedamount', '34%ofquotedamount') === false);
+check('numbers separated by a typo still match',
+  await equivalent('23%ofestmatedamount', '23%ofestimatedamount') === true);
+check('answer with a different magnitude is not equivalent',
+  await equivalent('40m', '400m') === false);
+check('answer key keeps a superscript symbol',
+  await answerKeySql('i = 2/5 mr\u00b2', null, '[]') === 'i=2/5mr\u00b2',
+  await answerKeySql('i = 2/5 mr\u00b2', null, '[]'));
+check('a superscript is part of the answer',
+  await equivalent('i=2/5mr\u00b2', 'i=2/5mr') === false);
+check('identical formulas still match',
+  await equivalent('i=2/5mr\u00b2', 'i=2/5mr\u00b2') === true);
+
+const CHART_OLD = JSON.stringify(['Gnatt chart', 'milestone chart', 'pi chart', 'none']);
+const CHART_NEW = JSON.stringify(['Gantt chart', 'milestone chart', 'pi chart', 'none']);
+const typoOld = await insertQuestion({
+  text: 'Jobs going ahead of schedule are shown in', options: CHART_OLD, index: 0,
+  correctText: null, quality: 10, identity: 'typo-1', number: 51,
+  sourceIdentity: 'typo-1', sourceKey: 'typo:51'
+});
+const typoNew = await insertQuestion({
+  text: 'Jobs going ahead of schedule are shown in', options: CHART_NEW, index: 0,
+  correctText: null, quality: 12, identity: 'typo-2', number: 52,
+  sourceIdentity: 'typo-2', sourceKey: 'typo:52'
+});
+const typoMerge = await rows('SELECT abhyas_merge_questions($1, $2) AS result', [typoNew, typoOld]);
+check('merge accepts answers that differ only by a typo',
+  typoMerge[0].result.ok === true, typoMerge[0].result);
+check('merge keeps the better copy of the typo pair',
+  Number((await rows('SELECT count(*)::int AS n FROM questions WHERE id = $1', [typoNew]))[0].n) === 1);
+
+const OPPOSITE_OLD = JSON.stringify(['increase workable', 'decrease workable']);
+const OPPOSITE_NEW = JSON.stringify(['decrease workable', 'increase workable']);
+const oppositeOld = await insertQuestion({
+  text: 'Entrained air in concrete', options: OPPOSITE_OLD, index: 0,
+  correctText: null, quality: 10, identity: 'opp-1', number: 53,
+  sourceIdentity: 'opp-1', sourceKey: 'opp:53'
+});
+const oppositeNew = await insertQuestion({
+  text: 'Entrained air in concrete', options: OPPOSITE_NEW, index: 0,
+  correctText: null, quality: 12, identity: 'opp-2', number: 54,
+  sourceIdentity: 'opp-2', sourceKey: 'opp:54'
+});
+try {
+  await rows('SELECT abhyas_merge_questions($1, $2)', [oppositeNew, oppositeOld]);
+  check('merge still refuses opposite answers', false, 'merge was allowed');
+} catch (error) {
+  check('merge still refuses opposite answers', /answers differ too much/.test(error.message), error.message);
+}
+
+// -- 80% similarity: a merge a reviewer clicks by hand -------------------------
+const similarity = async (a, b) =>
+  Number((await rows('SELECT abhyas_answer_similarity($1, $2) AS s', [a, b]))[0].s);
+const mergeable = async (a, b) =>
+  (await rows('SELECT abhyas_answers_mergeable($1, $2) AS m', [a, b]))[0].m;
+
+const BASE = 'abcdefghijklmnopqrst';   // 20 letters
+const CLOSE = 'abcdqfghiqklmnqpqrst';  // 3 letters wrong: 85% alike, same ends
+const TYPO = 'abcdqfghijklmnopqrst';   // 1 letter wrong
+const FAR = 'abcdqfgqijqlmqopzrst';    // 5 letters wrong: 75% alike
+check('similarity is 1 for identical answers', await similarity(BASE, BASE) === 1);
+check('similarity counts the wrong letters',
+  Math.abs(await similarity(BASE, CLOSE) - 0.85) < 1e-9, await similarity(BASE, CLOSE));
+check('a typo is already equivalent', await equivalent(BASE, TYPO) === true);
+check('85% similar answers may be merged by hand', await mergeable(BASE, CLOSE) === true);
+check('answers below 80% stay blocked',
+  await mergeable(BASE, FAR) === false);
+check('opposites that look close stay blocked',
+  await mergeable('increaseworkable', 'decreaseworkable') === false);
+check('unanswered answers are never mergeable',
+  await mergeable('__unanswered__', '__unanswered__') === false);
+
+const NEAR_OLD = JSON.stringify([BASE, 'second', 'third', 'fourth']);
+const NEAR_NEW = JSON.stringify([CLOSE, 'second', 'third', 'fourth']);
+const nearOld = await insertQuestion({
+  text: 'Answers 85% alike, same document', options: NEAR_OLD, index: 0,
+  correctText: null, quality: 10, identity: 'near-1', number: 61,
+  sourceIdentity: 'near-1', sourceKey: 'near:61'
+});
+const nearNew = await insertQuestion({
+  text: 'Answers 85% alike, same document', options: NEAR_NEW, index: 0,
+  correctText: null, quality: 12, identity: 'near-2', number: 62,
+  sourceIdentity: 'near-2', sourceKey: 'near:62'
+});
+const nearMerge = await rows('SELECT abhyas_merge_questions($1, $2) AS result', [nearNew, nearOld]);
+check('a merge clicked by hand accepts answers 80% alike',
+  nearMerge[0].result.ok === true, nearMerge[0].result);
 
 // The editor's save path, including the source-correction alias.
 const edited = await rows('SELECT id, identity_key FROM questions WHERE identity_key = $1', ['ccc']);

@@ -5,7 +5,9 @@ import json
 from psycopg2 import sql
 from psycopg2.extras import Json
 
-from dedupe.content_identity import answer_identity
+from dedupe.content_identity import (
+    answer_identity, answers_equivalent, answers_mergeable,
+)
 
 
 def _answer_key(correct_text, correct_index=None, options=None):
@@ -106,7 +108,8 @@ def _move_subtopics(cur, keeper_id, duplicate_id):
 
 def merge_question_rows(cur, keeper_id, duplicate_id, *, reason="exact",
                         signature=None, child_fks=None, keeper_before=None,
-                        source_question_key_override=None):
+                        source_question_key_override=None,
+                        min_answer_similarity=None):
     """Merge duplicate into keeper; abort on unsafe/cross-chapter or FK conflicts."""
     if keeper_id == duplicate_id:
         raise ValueError("keeper and duplicate IDs must differ")
@@ -132,7 +135,11 @@ def merge_question_rows(cur, keeper_id, duplicate_id, *, reason="exact",
     )
     if keeper_answer == "__unanswered__" or duplicate_answer == "__unanswered__":
         raise ValueError("cannot merge unanswered questions; verify both answers first")
-    if keeper_answer != duplicate_answer:
+    if min_answer_similarity is None:
+        # Without a reviewer in the loop only a typo counts as agreement.
+        if not answers_equivalent(keeper_answer, duplicate_answer):
+            raise ValueError("cannot merge questions with conflicting correct answers")
+    elif not answers_mergeable(keeper_answer, duplicate_answer, min_answer_similarity):
         raise ValueError("cannot merge questions with conflicting correct answers")
 
     child_fks = child_fks if child_fks is not None else discover_question_child_fks(cur)

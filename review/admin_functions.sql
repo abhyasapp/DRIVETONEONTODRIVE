@@ -57,13 +57,21 @@ CREATE TABLE IF NOT EXISTS review_deletions (
 -- One canonical answer string. A hyphen joining two letters is typography, so
 -- "back-sight" equals "back sight"; a numeric hyphen is kept, because
 -- "5-10%" is a range and must not collapse into "510%".
+-- Only ASCII junk is removed: letters and digits outside ASCII (mr², σ, θ, µ)
+-- are part of the answer and must survive, or "2/5mr²" would equal "2/5mr".
 CREATE OR REPLACE FUNCTION abhyas_answer_norm(p_value text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $fn$
     SELECT regexp_replace(
                regexp_replace(
-                   regexp_replace(lower(coalesce(p_value, '')), '\s*-\s*', '-', 'g'),
-                   '([a-z])-(?=[a-z])', '\1', 'g'),
-               '[^a-z0-9=+*/<>^%~-]', '', 'g')
+                   -- Unicode dashes become '-' and curly quotes/ellipsis vanish,
+                   -- matching _PUNCT_MAP in dedupe/content_identity.py.
+                   translate(lower(coalesce(p_value, '')),
+                       U&'\2010\2011\2012\2013\2014\2015\2212\2018\2019\201A\201B\201C\201D\201E\2026\2032\2033\2035\2036',
+                       '-------'),
+                   '[\s!"#$&''(),.:;?@\[\\\]_{}|`]+', '', 'g'),
+               -- Junk first, then the letter-hyphen rule: in LaTeX answers the
+               -- neighbours only become letters once the braces are gone.
+               '([a-z])-(?=[a-z])', '\1', 'g')
 $fn$;
 
 CREATE OR REPLACE FUNCTION abhyas_answer_key(
@@ -94,6 +102,148 @@ LANGUAGE sql IMMUTABLE AS $fn$
             THEN abhyas_answer_norm(p_options ->> p_correct_index)
         ELSE '__unanswered__'
     END
+$fn$;
+
+-- True when two canonical answers are the same answer, typos included.
+-- Mirrors answers_equivalent() in dedupe/content_identity.py and
+-- answersEquivalent() in review/identity.js:
+--   * every digit and arithmetic sign must match exactly ("5-10%" is never
+--     "10-15%", "2" is never "20");
+--   * the letters must start and end the same ("increase" is never "decrease");
+--   * fewer than five letters must match exactly;
+--   * at most one wrong letter up to eight letters, two from nine letters.
+CREATE OR REPLACE FUNCTION abhyas_answers_equivalent(p_a text, p_b text)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE AS $fn$
+DECLARE
+    v_figures_a text;
+    v_figures_b text;
+    v_letters_a text;
+    v_letters_b text;
+    v_span integer;
+    v_allowed integer;
+    v_previous integer[];
+    v_current integer[];
+    v_cost integer;
+    i integer;
+    j integer;
+BEGIN
+    IF p_a IS NULL OR p_b IS NULL OR p_a = '' OR p_b = '' THEN
+        RETURN false;
+    END IF;
+    IF left(p_a, 2) = '__' OR left(p_b, 2) = '__' THEN
+        RETURN false;
+    END IF;
+    IF p_a = p_b THEN
+        RETURN true;
+    END IF;
+
+    v_figures_a := regexp_replace(p_a, '[a-z]', '', 'g');
+    v_figures_b := regexp_replace(p_b, '[a-z]', '', 'g');
+    IF v_figures_a <> v_figures_b THEN
+        RETURN false;
+    END IF;
+
+    v_letters_a := regexp_replace(p_a, '[^a-z]', '', 'g');
+    v_letters_b := regexp_replace(p_b, '[^a-z]', '', 'g');
+    IF v_letters_a = v_letters_b THEN
+        RETURN true;
+    END IF;
+    IF length(v_letters_a) < 5 OR length(v_letters_b) < 5 THEN
+        RETURN false;
+    END IF;
+    IF left(v_letters_a, 1) <> left(v_letters_b, 1)
+       OR right(v_letters_a, 1) <> right(v_letters_b, 1) THEN
+        RETURN false;
+    END IF;
+
+    v_span := greatest(length(v_letters_a), length(v_letters_b));
+    v_allowed := CASE WHEN v_span >= 9 THEN 2 ELSE 1 END;
+    IF abs(length(v_letters_a) - length(v_letters_b)) > v_allowed THEN
+        RETURN false;
+    END IF;
+
+    -- Banded Levenshtein; row i holds the distance for the first i letters.
+    v_previous := ARRAY(SELECT generate_series(0, length(v_letters_a)));
+    FOR j IN 1..length(v_letters_b) LOOP
+        v_current := ARRAY[j];
+        FOR i IN 1..length(v_letters_a) LOOP
+            v_cost := CASE WHEN substr(v_letters_a, i, 1) = substr(v_letters_b, j, 1)
+                           THEN 0 ELSE 1 END;
+            v_current := v_current || LEAST(
+                v_current[i] + 1,
+                v_previous[i + 1] + 1,
+                v_previous[i] + v_cost);
+        END LOOP;
+        v_previous := v_current;
+    END LOOP;
+    RETURN v_previous[length(v_letters_a) + 1] <= v_allowed;
+END
+$fn$;
+
+-- Trimmed-down Levenshtein distance, used only by the merge gate below.
+CREATE OR REPLACE FUNCTION abhyas_answer_distance(p_a text, p_b text)
+RETURNS integer
+LANGUAGE plpgsql IMMUTABLE AS $fn$
+DECLARE
+    v_previous integer[];
+    v_current integer[];
+    v_cost integer;
+    i integer;
+    j integer;
+BEGIN
+    IF p_a = p_b THEN
+        RETURN 0;
+    END IF;
+    IF p_a IS NULL OR p_a = '' THEN
+        RETURN coalesce(length(p_b), 0);
+    END IF;
+    IF p_b IS NULL OR p_b = '' THEN
+        RETURN length(p_a);
+    END IF;
+    v_previous := ARRAY(SELECT generate_series(0, length(p_b)));
+    FOR i IN 1..length(p_a) LOOP
+        v_current := ARRAY[i];
+        FOR j IN 1..length(p_b) LOOP
+            v_cost := CASE WHEN substr(p_a, i, 1) = substr(p_b, j, 1) THEN 0 ELSE 1 END;
+            v_current := v_current || LEAST(
+                v_current[j] + 1,
+                v_previous[j + 1] + 1,
+                v_previous[j] + v_cost);
+        END LOOP;
+        v_previous := v_current;
+    END LOOP;
+    RETURN v_previous[length(p_b) + 1];
+END
+$fn$;
+
+-- How alike two canonical answers are: 1 is identical, 0 is unrelated.
+-- Mirrors answers_similarity() in dedupe/content_identity.py.
+CREATE OR REPLACE FUNCTION abhyas_answer_similarity(p_a text, p_b text)
+RETURNS numeric
+LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT CASE
+        WHEN p_a IS NULL OR p_b IS NULL OR p_a = '' OR p_b = ''
+             OR left(p_a, 2) = '__' OR left(p_b, 2) = '__' THEN 0::numeric
+        ELSE 1 - (abhyas_answer_distance(p_a, p_b)::numeric
+                  / greatest(length(p_a), length(p_b)))
+    END
+$fn$;
+
+-- True when a reviewer may merge two answers: a typo always, and anything at
+-- least p_threshold alike (80% by default) when a person makes the call.
+-- Bulk and pipeline merges keep using abhyas_answers_equivalent.
+CREATE OR REPLACE FUNCTION abhyas_answers_mergeable(
+    p_a text,
+    p_b text,
+    p_threshold numeric DEFAULT 0.80
+) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT abhyas_answers_equivalent(p_a, p_b)
+        OR (p_a IS NOT NULL AND p_b IS NOT NULL
+            AND left(p_a, 1) = left(p_b, 1)
+            AND right(p_a, 1) = right(p_b, 1)
+            AND abhyas_answer_similarity(p_a, p_b) >= coalesce(p_threshold, 0.80))
 $fn$;
 
 -- Merge one duplicate into a keeper. Raises instead of merging when the two
@@ -166,8 +316,12 @@ BEGIN
     IF left(v_duplicate_answer, 2) = '__' THEN
         RAISE EXCEPTION 'duplicate question has no valid, consistent answer';
     END IF;
-    IF v_keeper_answer <> v_duplicate_answer THEN
-        RAISE EXCEPTION 'answers conflict; make both answers agree before merging';
+    -- A reviewer clicked this merge, so answers only need to be at least 80%
+    -- alike. The similarity is written into the audit note by the caller and
+    -- the console shows both answers before the button is enabled.
+    IF NOT abhyas_answers_mergeable(v_keeper_answer, v_duplicate_answer) THEN
+        RAISE EXCEPTION 'answers differ too much (% %% similar) to merge; fix one with Edit first',
+            round(abhyas_answer_similarity(v_keeper_answer, v_duplicate_answer) * 100, 1);
     END IF;
 
     SELECT to_jsonb(q) INTO v_question FROM questions q WHERE q.id = p_duplicate;
@@ -371,6 +525,127 @@ BEGIN
     RETURN jsonb_build_object('ok', true, 'merged', v_merged,
                               'retained', v_total - v_merged,
                               'reason', 'only copies with an exact identity and a matching verified answer merge');
+END
+$fn$;
+
+-- Merge every pending near-duplicate pair whose two copies already resolve to
+-- one identical verified answer, in a single guarded pass.
+--
+-- Gives the reviewer the same power as clicking "Merge" a thousand times, but
+-- without letting a wrong pair through: the two answer keys are compared inside
+-- Postgres and a pair is skipped unless they are equal and real. Unanswered or
+-- conflicting pairs are left pending with a note explaining the refusal, so a
+-- human still decides those. Keeping copy wins by corrected flag, then quality
+-- score, then the older id, matching abhyas_merge_exact_group.
+--
+-- p_limit caps how many pairs one call touches; the console calls this in chunks
+-- so a large queue can never exceed the HTTP statement timeout.
+-- p_dry_run=true reports what would merge without changing anything.
+CREATE OR REPLACE FUNCTION abhyas_merge_agreeing_candidates(
+    p_limit integer DEFAULT 500,
+    p_dry_run boolean DEFAULT false
+) RETURNS jsonb
+LANGUAGE plpgsql AS $fn$
+DECLARE
+    v_ids bigint[];
+    v_candidate_id bigint;
+    v_pair record;
+    v_keeper bigint;
+    v_duplicate bigint;
+    v_matched integer := 0;
+    v_merged integer := 0;
+    v_failed integer := 0;
+    v_remaining integer := 0;
+BEGIN
+    -- Snapshot the candidate ids first: merging deletes question rows and
+    -- rewrites other candidates, which must not disturb an open cursor.
+    SELECT coalesce(array_agg(s.id ORDER BY s.id), '{}'::bigint[]) INTO v_ids
+    FROM (
+        SELECT d.id
+        FROM dedupe_review_candidates d
+        JOIN questions q1 ON q1.id = d.q1_id
+        JOIN questions q2 ON q2.id = d.q2_id
+        WHERE d.status = 'pending'
+          AND abhyas_answers_equivalent(
+                  abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options),
+                  abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options))
+        ORDER BY d.id
+        LIMIT greatest(coalesce(p_limit, 500), 0)
+    ) s;
+    v_matched := coalesce(array_length(v_ids, 1), 0);
+
+    FOREACH v_candidate_id IN ARRAY v_ids LOOP
+        SELECT d.q1_id, d.q2_id,
+               q1.corrected_at AS q1_corrected,
+               coalesce(q1.quality_score, 0) AS q1_quality,
+               q2.corrected_at AS q2_corrected,
+               coalesce(q2.quality_score, 0) AS q2_quality
+          INTO v_pair
+          FROM dedupe_review_candidates d
+          JOIN questions q1 ON q1.id = d.q1_id
+          JOIN questions q2 ON q2.id = d.q2_id
+         WHERE d.id = v_candidate_id
+           AND d.status = 'pending'
+           AND abhyas_answers_equivalent(
+                   abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options),
+                   abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options));
+        CONTINUE WHEN NOT FOUND;
+
+        IF v_pair.q1_corrected IS NOT NULL AND v_pair.q2_corrected IS NULL THEN
+            v_keeper := v_pair.q1_id;
+            v_duplicate := v_pair.q2_id;
+        ELSIF v_pair.q2_corrected IS NOT NULL AND v_pair.q1_corrected IS NULL THEN
+            v_keeper := v_pair.q2_id;
+            v_duplicate := v_pair.q1_id;
+        ELSIF v_pair.q1_quality > v_pair.q2_quality THEN
+            v_keeper := v_pair.q1_id;
+            v_duplicate := v_pair.q2_id;
+        ELSIF v_pair.q2_quality > v_pair.q1_quality THEN
+            v_keeper := v_pair.q2_id;
+            v_duplicate := v_pair.q1_id;
+        ELSIF v_pair.q1_id <= v_pair.q2_id THEN
+            v_keeper := v_pair.q1_id;
+            v_duplicate := v_pair.q2_id;
+        ELSE
+            v_keeper := v_pair.q2_id;
+            v_duplicate := v_pair.q1_id;
+        END IF;
+
+        CONTINUE WHEN p_dry_run;
+
+        BEGIN
+            PERFORM abhyas_merge_questions(v_keeper, v_duplicate, 'bulk_agreeing', 'bulk');
+            UPDATE dedupe_review_candidates
+               SET status = 'merged', reviewed_at = now(),
+                   review_note = 'bulk merged into #' || v_keeper
+             WHERE id = v_candidate_id;
+            v_merged := v_merged + 1;
+        EXCEPTION WHEN others THEN
+            v_failed := v_failed + 1;
+            UPDATE dedupe_review_candidates
+               SET review_note = 'bulk merge refused: ' || SQLERRM
+             WHERE id = v_candidate_id;
+        END;
+    END LOOP;
+
+    SELECT count(*)::int INTO v_remaining
+    FROM dedupe_review_candidates d
+    JOIN questions q1 ON q1.id = d.q1_id
+    JOIN questions q2 ON q2.id = d.q2_id
+    WHERE d.status = 'pending'
+      AND abhyas_answers_equivalent(
+              abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options),
+              abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options));
+
+    RETURN jsonb_build_object(
+        'ok', true,
+        'dry_run', coalesce(p_dry_run, false),
+        'matched', v_matched,
+        'merged', v_merged,
+        'failed', v_failed,
+        'remaining', v_remaining,
+        'reason', 'only pairs that already share one identical verified answer merge'
+    );
 END
 $fn$;
 

@@ -32,7 +32,8 @@ const PY = String.raw`
 import json, sys
 sys.path.insert(0, ".")
 from dedupe.content_identity import (identity, answer_identity, source_location_key,
-                                     compute_quality_score)
+                                     answers_equivalent, answers_similarity,
+                                     answers_mergeable, compute_quality_score)
 
 stems = [
     "What is the unit of force?",
@@ -68,7 +69,40 @@ answers = [
     ("1-2 m", None, ["1-2 m", "12 m"]),
 ]
 
-out = {"identity": [], "answer": [], "location": [], "quality": []}
+pairs = [
+    ("back-sight", "back sight"),
+    ("Gnatt chart", "Gantt chart"),
+    ("perfomance/security money", "performance/security money"),
+    ("siliceous", "silicious"),
+    ("2-3% of estmated amount", "2-3% of estimated amount"),
+    ("increase workable", "increase workability"),
+    ("increase", "decrease"),
+    ("5-10%", "10-15%"),
+    ("2", "20"),
+    ("2-3% of quoted amount", "3-4% of quoted amount"),
+    ("< three crore", "< ten crore"),
+    ("graded aggregates", "graded aggregate"),
+    ("1 in 250", "1 : 250"),
+    ("", ""),
+    ("Newton", "Newton"),
+    ("40 m", "(d) 40 m"),
+    ("2-3% of estimated amount", "3-4% of estimated amount"),
+    ("increase workable", "decrease workable"),
+    ("i = 2/5 mr\u00b2", "i = 2/5 mr"),
+    ("i = 2/5 mr\u00b2", "i = 2/5 mr\u00b2"),
+    ("\u03c3cos\u00b2\u03b8", "\u03c3/2sin2\u03b8"),
+]
+
+out = {"identity": [], "answer": [], "location": [], "quality": [],
+       "equivalent": [], "similarity": []}
+for left, right in pairs:
+    left_key = answer_identity(left, None, None)
+    right_key = answer_identity(right, None, None)
+    out["equivalent"].append({"a": left, "b": right, "ka": left_key, "kb": right_key,
+                              "same": answers_equivalent(left_key, right_key)})
+    out["similarity"].append({"a": left, "b": right, "ka": left_key, "kb": right_key,
+                              "ratio": answers_similarity(left_key, right_key),
+                              "mergeable": answers_mergeable(left_key, right_key)})
 for stem in stems:
     for opts in options:
         out["identity"].append({"stem": stem, "options": opts,
@@ -116,6 +150,17 @@ for (const row of vectors.answer) {
 for (const row of vectors.location) {
   same(`sourceLocationKey(${JSON.stringify(row.book)}, ${JSON.stringify(row.topic)})`,
     await Identity.sourceLocationKey(row.book, row.topic), row.hash);
+}
+for (const row of vectors.equivalent) {
+  same(`answersEquivalent(${JSON.stringify(row.a)}, ${JSON.stringify(row.b)})`,
+    Identity.answersEquivalent(row.ka, row.kb), row.same);
+}
+for (const row of vectors.similarity) {
+  same(`similarity(${JSON.stringify(row.a)}, ${JSON.stringify(row.b)})`,
+    Math.round(Identity.answerSimilarity(row.ka, row.kb) * 1e6) / 1e6,
+    Math.round(row.ratio * 1e6) / 1e6);
+  same(`answersMergeable(${JSON.stringify(row.a)}, ${JSON.stringify(row.b)})`,
+    Identity.answersMergeable(row.ka, row.kb), row.mergeable);
 }
 for (const row of vectors.quality) {
   same(`qualityScore(${JSON.stringify(row.explanation)}, ${JSON.stringify(row.options)}, ${row.length})`,

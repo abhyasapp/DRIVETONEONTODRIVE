@@ -6,6 +6,7 @@ from psycopg2.extras import Json
 
 from dedupe.content_identity import (
     identity, compute_quality_score, source_question_key, source_location_key,
+    answers_mergeable, MERGE_SIMILARITY,
 )
 from dedupe.source_aliases import ensure_correction_source_alias_schema
 from dedupe.merge_questions import (
@@ -234,8 +235,8 @@ def api_review_candidate(body, cur):
     duplicate_answer_key = _answer_key(duplicate[5], duplicate[4], duplicate[3])
     if keeper_answer_key.startswith("__") or duplicate_answer_key.startswith("__"):
         return {"ok": False, "error": "both questions need valid, consistent correct answers before merging"}
-    if keeper_answer_key != duplicate_answer_key:
-        return {"ok": False, "error": "answer conflict; edit both answers to agree before merging"}
+    if not answers_mergeable(keeper_answer_key, duplicate_answer_key):
+        return {"ok": False, "error": "answers differ too much to merge; at least 80% alike is required"}
 
     before = {"question": keeper[2], "options": keeper[3],
               "correct_index": keeper[4], "correct_text": keeper[5],
@@ -290,13 +291,14 @@ def api_review_candidate(body, cur):
         duplicate_answer = cur.fetchone()
         if (_answer_key(*keeper_answer).startswith("__")
                 or _answer_key(*duplicate_answer).startswith("__")
-                or _answer_key(*keeper_answer) != _answer_key(*duplicate_answer)):
-            return {"ok": False, "error": "edited answers conflict; make them agree before merge"}
+                or not answers_mergeable(_answer_key(*keeper_answer), _answer_key(*duplicate_answer))):
+            return {"ok": False, "error": "edited answers are still too different to merge"}
     merge_question_rows(cur, keeper_id, duplicate_id,
                         reason="manual_near" if action == "merge" else "manual_exact",
                         signature=identity(keeper[2], keeper[3] or []),
                         child_fks=discover_question_child_fks(cur),
-                        keeper_before=before)
+                        keeper_before=before,
+                        min_answer_similarity=MERGE_SIMILARITY)
     cur.execute("""UPDATE dedupe_review_candidates SET status='merged',
         review_note=%s,reviewed_at=now() WHERE id=%s""", (note, candidate_id))
     return {"ok": True, "status": "merged", "keeper_id": keeper_id,
