@@ -2,8 +2,9 @@
 """
 apply_corrections.py  (v2)
 --------------------------
-Pull corrections from the Abhyas Apps Script backend and apply them to
-Neon BEFORE dedupe and export.
+Pull corrections from the configured Abhyas API backend (Supabase Edge
+Function, or the Apps Script fallback) and apply them to Neon BEFORE dedupe
+and export.
 
 Run order: sync -> corrections -> dedupe -> classify -> export.
 
@@ -125,7 +126,7 @@ def fetch_corrections(since_ms, limit=500):
     if r.status_code in (401, 403):
         raise BackendError(
             f"HTTP {r.status_code} — ABHYAS_SYNC_KEY does not match "
-            f"SYNC_KEY in the Apps Script project."
+            f"SYNC_KEY in the configured API backend."
         )
     if 400 <= r.status_code < 500:
         raise BackendError(f"HTTP {r.status_code} — {r.text[:200]!r}")

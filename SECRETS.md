@@ -13,8 +13,8 @@ Secrets can't be viewed again after saving - to change one, create it again with
 | `DATABASE_URL` | yes | `postgresql://neondb_owner:AbC123xyz@ep-cool-name-12345.ap-southeast-1.aws.neon.tech/neondb?sslmode=require` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | yes | **Whole contents** of the service-account key file, starting with `{` and ending with `}` (multi-line is OK here) |
 | `GDRIVE_OAUTH_TOKEN` | yes* | One-line JSON, see below |
-| `ABHYAS_APPS_SCRIPT_URL` | yes | `https://script.google.com/macros/s/AKfycbx.../exec` |
-| `ABHYAS_SYNC_KEY` | yes | `my-long-random-sync-key` (same value as in the Apps Script) |
+| `ABHYAS_APPS_SCRIPT_URL` | yes | Supabase Edge Function URL: `https://<project-ref>.supabase.co/functions/v1/api` (or the Apps Script `/exec` URL for the legacy fallback) |
+| `ABHYAS_SYNC_KEY` | yes | Same value as `SYNC_KEY` in the Supabase function secrets (or the Apps Script `SYNC_KEY` for the legacy fallback) |
 | `GEMINI_API_KEY` | yes | `AIzaSyD-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
 | `GEMINI_API_KEY_2` | no | a second Gemini key (more quota) |
 | `CEREBRAS_API_KEY` | no | `csk-xxxxxxxxxxxxxxxxxxxx` |
