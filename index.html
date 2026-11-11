@@ -819,24 +819,31 @@
              abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options))`
       : 'false';
     const rows = await sql(`
-      SELECT chapter_id, chapter_name,
+      SELECT chapter_id, chapter_name, level_key,
              count(*)::int AS pending,
              count(*) FILTER (WHERE mergeable)::int AS ready
         FROM (SELECT d.chapter_id,
                      coalesce(c.chapter_name, 'chapter ' || d.chapter_id) AS chapter_name,
+                     l.level_key,
                      ${mergeable} AS mergeable
                 FROM dedupe_review_candidates d
                 JOIN questions q1 ON q1.id = d.q1_id
                 JOIN questions q2 ON q2.id = d.q2_id
                 LEFT JOIN chapters c ON c.id = d.chapter_id
+                LEFT JOIN levels l ON l.id = c.level_id
                WHERE d.status = 'pending') scoped
-       GROUP BY 1, 2
-       ORDER BY pending DESC, chapter_name`, []);
+       GROUP BY 1, 2, 3
+       ORDER BY pending DESC, chapter_name, level_key`, []);
     const pending = rows.reduce((sum, row) => sum + num(row.pending), 0);
     select.innerHTML = `<option value="">All chapters · ${fmt(pending)} pending</option>`
-      + rows.map(row => `<option value="${num(row.chapter_id)}" data-name="${esc(row.chapter_name)}">`
-        + `${esc(row.chapter_name)} · ${fmt(row.pending)}${state.helpers ? ` (${fmt(row.ready)} ready)` : ''}`
-        + '</option>').join('');
+      + rows.map(row => {
+        // Level 5 and level 7 reuse chapter names, so the level is part of the
+        // label the reviewer picks and of the name shown in every message.
+        const label = `${esc(row.chapter_name)}${row.level_key ? ` · ${esc(row.level_key)}` : ''}`;
+        return `<option value="${num(row.chapter_id)}" data-name="${label}">`
+          + `${label} · ${fmt(row.pending)}${state.helpers ? ` (${fmt(row.ready)} ready)` : ''}`
+          + '</option>';
+      }).join('');
     select.value = rows.some(row => String(row.chapter_id) === keep) ? keep : '';
   }
 
