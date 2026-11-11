@@ -177,11 +177,15 @@
           <div class="muted">Fuzzy candidates found by the pipeline. Similarity is not proof — read both, then merge into the better copy, reject, or edit first.</div>
         </div>
         <div class="row">
-          <button class="button primary" id="bulkMerge" disabled title="Merge every pending pair whose two copies already share one identical answer">Merge all agreeing</button>
+          <button class="button primary" id="chapterMerge" disabled title="Merge every pair in the selected chapter whose answers pass the 80% bar, keeping the better copy">Merge ready in chapter</button>
+          <button class="button ghost" id="bulkStop" hidden>Stop</button>
+          <button class="button ghost" id="bulkMerge" disabled title="Merge every pending pair in every chapter whose two copies already share one identical answer">Merge all agreeing</button>
           <select id="reviewChapter" aria-label="Chapter"><option value="">All chapters</option></select>
           <select id="reviewFilter" aria-label="Queue filter">
             <option value="all">All pairs</option>
-            <option value="agreeing">Answers agree</option>
+            <option value="ready">Can merge now</option>
+            <option value="needs_edit">Needs an edit</option>
+            <option value="agreeing">Answers agree (strict)</option>
             <option value="conflicts">Conflicts only</option>
           </select>
           <select id="reviewStatus" aria-label="Candidate status">
@@ -859,6 +863,10 @@
     const filter = $('#reviewFilter').value;
     const where = ['d.status = $1'];
     const params = [wanted];
+    // The fast path: only pairs that will actually merge, so a reviewer does not
+    // page past the ones that need an edit first.
+    if (state.helpers && filter === 'ready') where.push(`coalesce(abhyas_answers_mergeable(${keyOne}, ${keyTwo}), false)`);
+    if (state.helpers && filter === 'needs_edit') where.push(`NOT coalesce(abhyas_answers_mergeable(${keyOne}, ${keyTwo}), false)`);
     if (state.helpers && filter === 'agreeing') where.push(`abhyas_answers_equivalent(${keyOne}, ${keyTwo})`);
     if (state.helpers && filter === 'conflicts') where.push(`NOT abhyas_answers_equivalent(${keyOne}, ${keyTwo})`);
     if (chapter) {
@@ -875,11 +883,8 @@
         WHERE ${whereSql}`, params);
       const total = num(counts.n);
       const ready = num(counts.ready);
-      $('#reviewScope').textContent = !state.helpers
-        ? `${scopeName} · ${fmt(total)} ${wanted}`
-        : wanted === 'pending'
-          ? `${scopeName} · ${fmt(total)} pending · ${fmt(ready)} can merge now · ${fmt(total - ready)} need an edit`
-          : `${scopeName} · ${fmt(total)} ${wanted} · ${fmt(ready)} would merge`;
+      state.scope = { name: scopeName, filter, wanted, total, ready };
+      renderScope();
       const rows = await sql(`
         SELECT d.id, d.chapter_id, d.q1_id, d.q2_id,
                d.stem_score::float AS stem_score, d.options_score::float AS options_score,
@@ -928,7 +933,7 @@
         const why = !bothAnswered
           ? `One copy has no usable answer (#${num(row.q1_id)}: ${esc(resolvedAnswer(first) || 'none')} · #${num(row.q2_id)}: ${esc(resolvedAnswer(second) || 'none')}). Pick the correct option with Edit on that copy, then merge — explanations are never compared.`
           : `Answers differ: #${num(row.q1_id)} “${esc(resolvedAnswer(first))}” vs #${num(row.q2_id)} “${esc(resolvedAnswer(second))}” — ${similarPercent}% similar, below the 80% a manual merge needs. Options and explanations are never part of the check. If the two really are different questions, use “Not a duplicate” instead.`;
-        return `<div class="copy">
+        return `<div class="copy" data-candidate="${num(row.id)}" data-ready="${mergeable ? '1' : '0'}">
           <div class="hdr">
             <b>Candidate ${num(row.id)}</b>
             <span>${esc(row.chapter_name || `chapter ${row.chapter_id}`)}</span>
@@ -952,10 +957,10 @@
       }).join('') : '<div class="empty">Nothing in this queue.</div>';
 
       $$('#reviewList [data-merge-a]').forEach(button => {
-        button.onclick = () => mergeCandidate(num(button.dataset.mergeA), 'a', () => loadReview(state.reviewOffset));
+        button.onclick = () => mergeCandidate(num(button.dataset.mergeA), 'a');
       });
       $$('#reviewList [data-merge-b]').forEach(button => {
-        button.onclick = () => mergeCandidate(num(button.dataset.mergeB), 'b', () => loadReview(state.reviewOffset));
+        button.onclick = () => mergeCandidate(num(button.dataset.mergeB), 'b');
       });
       $$('#reviewList [data-reject]').forEach(button => {
         button.onclick = async () => {
@@ -963,7 +968,7 @@
           if (!confirm('Mark this pair as not a duplicate?')) return;
           try {
             await sql(`UPDATE dedupe_review_candidates SET status = 'rejected', reviewed_at = now(), review_note = coalesce(review_note, 'reviewer: not duplicate') WHERE id = $1`, [id]);
-            await loadReview(state.reviewOffset);
+            dropReviewCard(id, button.closest('.copy')?.dataset.ready === '1');
           } catch (error) { alert(error.message); }
         };
       });
@@ -1030,7 +1035,157 @@
   }
   $('#bulkMerge').onclick = bulkMergeAgreeing;
 
-  async function mergeCandidate(candidateId, side, reload) {
+  // One chapter, every pair that already clears the 80% bar. Each merge goes
+  // through the same audited function the single-pair button calls; the keeper
+  // follows the bulk rule (corrected first, then quality, then older id).
+  async function mergeChapterReady() {
+    const note = $('#reviewBulk');
+    const stop = $('#bulkStop');
+    if (!state.helpers) {
+      status(note, 'Install the review helpers first — merging runs inside Postgres.', 'bad');
+      return;
+    }
+    const chapter = $('#reviewChapter').value;
+    if (!chapter) {
+      status(note, 'Pick one chapter first. This sweep never touches the other chapters.', 'bad');
+      return;
+    }
+    const name = $('#reviewChapter').selectedOptions[0]?.dataset.name || `chapter ${chapter}`;
+    $('#chapterMerge').disabled = true;
+    try {
+      status(note, `Reading ${name}'s queue…`, 'busy');
+      const rows = await sql(`
+        SELECT * FROM (
+          SELECT d.id, d.q1_id, d.q2_id, d.q1_identity_key, d.q2_identity_key,
+                 (q1.corrected_at IS NOT NULL) AS q1_corrected,
+                 (q2.corrected_at IS NOT NULL) AS q2_corrected,
+                 coalesce(q1.quality_score, 0)::float AS q1_quality,
+                 coalesce(q2.quality_score, 0)::float AS q2_quality,
+                 abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options) AS k1,
+                 abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options) AS k2
+            FROM dedupe_review_candidates d
+            JOIN questions q1 ON q1.id = d.q1_id
+            JOIN questions q2 ON q2.id = d.q2_id
+           WHERE d.status = 'pending' AND d.chapter_id = $1
+        ) pair
+        WHERE abhyas_answers_mergeable(pair.k1, pair.k2)
+        ORDER BY pair.id`, [num(chapter)]);
+      if (!rows.length) {
+        status(note, `${name} has no pair above the 80% bar right now — the rest need an answer fixed first.`, 'good');
+        await loadReview(0);
+        return;
+      }
+      const identical = rows.filter(row => Identity.answersEquivalent(row.k1, row.k2)).length;
+      const similar = rows.length - identical;
+      // Two candidates can share one copy. Merging either deletes that copy, so
+      // the other resolves itself; plan a disjoint set up front to keep the
+      // promised count honest.
+      const plan = [];
+      const used = new Set();
+      for (const row of rows) {
+        if (used.has(num(row.q1_id)) || used.has(num(row.q2_id))) continue;
+        used.add(num(row.q1_id));
+        used.add(num(row.q2_id));
+        plan.push(row);
+      }
+      const shared = rows.length - plan.length;
+      const go = confirm(`Merge ${fmt(plan.length)} pair(s) in ${name}?\n\n`
+        + `${fmt(identical)} already share the same answer; ${fmt(similar)} are 80–100% similar, so the better copy's answer wins.\n`
+        + 'Keeper: human-corrected copy first, then the higher quality score, then the older id.\n'
+        + 'Every merge deletes one copy and writes a full snapshot to dedup_deletions.\n'
+        + 'Pairs that need an edit stay in the queue.'
+        + (shared ? `\n${fmt(shared)} more candidate(s) share a copy with these and resolve with them.` : ''));
+      if (!go) { status(note, 'Nothing merged. The queue is unchanged.'); return; }
+
+      state.stopBulk = false;
+      stop.hidden = false;
+      let merged = 0;
+      let failed = 0;
+      for (let index = 0; index < plan.length; index += 1) {
+        if (state.stopBulk) break;
+        const row = plan[index];
+        let keeper;
+        let duplicate;
+        let signature;
+        if (row.q1_corrected && !row.q2_corrected) {
+          keeper = num(row.q1_id); duplicate = num(row.q2_id); signature = row.q1_identity_key;
+        } else if (row.q2_corrected && !row.q1_corrected) {
+          keeper = num(row.q2_id); duplicate = num(row.q1_id); signature = row.q2_identity_key;
+        } else if (num(row.q1_quality) > num(row.q2_quality)) {
+          keeper = num(row.q1_id); duplicate = num(row.q2_id); signature = row.q1_identity_key;
+        } else if (num(row.q2_quality) > num(row.q1_quality)) {
+          keeper = num(row.q2_id); duplicate = num(row.q1_id); signature = row.q2_identity_key;
+        } else if (num(row.q1_id) <= num(row.q2_id)) {
+          keeper = num(row.q1_id); duplicate = num(row.q2_id); signature = row.q1_identity_key;
+        } else {
+          keeper = num(row.q2_id); duplicate = num(row.q1_id); signature = row.q2_identity_key;
+        }
+        const percent = (Identity.answerSimilarity(row.k1, row.k2) * 100).toFixed(1);
+        try {
+          await sqlOne(`SELECT abhyas_merge_questions($1, $2, 'bulk_agreeing', $3) AS result`,
+            [keeper, duplicate, signature || 'bulk']);
+          await sql(`UPDATE dedupe_review_candidates
+              SET status = 'merged', reviewed_at = now(), review_note = $2
+            WHERE id = $1`,
+            [num(row.id), `chapter sweep into #${keeper} (answers ${percent}% similar)`]);
+          merged += 1;
+        } catch (error) {
+          failed += 1;
+        }
+        status(note, `Merging ${name}: ${fmt(merged)} of ${fmt(plan.length)}`
+          + `${failed ? ` · ${fmt(failed)} refused` : ''}${state.stopBulk ? ' · stopping' : ''}`, 'busy');
+      }
+      stop.hidden = true;
+      status(note, `Merged ${fmt(merged)} pair(s) in ${name}`
+        + `${failed ? ` · ${fmt(failed)} refused, still queued` : ''}`
+        + `${shared ? ` · ${fmt(shared)} shared a copy and resolved too` : ''}`
+        + `${state.stopBulk ? ' · stopped early' : ''}.`, failed ? 'bad' : 'good');
+      await loadReview(0);
+      await loadOverview();
+    } catch (error) {
+      stop.hidden = true;
+      status(note, error.message, 'bad');
+    } finally {
+      renderScope();
+    }
+  }
+  $('#chapterMerge').onclick = mergeChapterReady;
+  $('#bulkStop').onclick = () => { state.stopBulk = true; };
+
+  // The counts are recomputed by the next queue load; a single click only edits
+  // the numbers in place so reviewing does not re-aggregate 2,283 pairs each time.
+  function renderScope() {
+    const scope = state.scope;
+    if (!scope) return;
+    $('#reviewScope').textContent = !state.helpers
+      ? `${scope.name} · ${fmt(scope.total)} ${scope.wanted}`
+      : scope.filter === 'ready' || scope.filter === 'needs_edit'
+        ? `${scope.name} · ${fmt(scope.total)} ${scope.filter === 'ready' ? 'ready to merge' : 'need an edit'}`
+        : scope.wanted === 'pending'
+          ? `${scope.name} · ${fmt(scope.total)} pending · ${fmt(scope.ready)} can merge now · ${fmt(scope.total - scope.ready)} need an edit`
+          : `${scope.name} · ${fmt(scope.total)} ${scope.wanted} · ${fmt(scope.ready)} would merge`;
+    const sweep = $('#chapterMerge');
+    const chapter = $('#reviewChapter').value;
+    sweep.disabled = !state.helpers || !chapter || scope.wanted !== 'pending' || !scope.ready;
+    sweep.textContent = chapter && scope.wanted === 'pending' && scope.ready
+      ? `Merge ${fmt(scope.ready)} ready`
+      : 'Merge ready in chapter';
+  }
+
+  function dropReviewCard(candidateId, wasReady) {
+    const card = $$(`#reviewList .copy[data-candidate="${candidateId}"]`)[0];
+    if (card) card.remove();
+    if (state.scope) {
+      state.scope.total = Math.max(0, state.scope.total - 1);
+      if (wasReady) state.scope.ready = Math.max(0, state.scope.ready - 1);
+      renderScope();
+    }
+    const left = $$('#reviewList .copy').length;
+    if (!left) { loadReview(state.reviewOffset); return; }
+    $('#reviewPos').textContent = `${state.reviewOffset + 1}–${state.reviewOffset + left} of ${fmt(state.scope ? state.scope.total : left)}`;
+  }
+
+  async function mergeCandidate(candidateId, side) {
     try {
       // Read both answers before the merge: the duplicate question is deleted by
       // the merge, so its answer cannot be measured afterwards.
@@ -1053,7 +1208,7 @@
         review_note = 'merged into #' || $2 || ' (answers ' || $3 || '% similar)' WHERE id = $1`,
         [candidateId, keeper, percent]);
       status($('#reviewBulk'), `Merged #${duplicate} into #${keeper} — answers ${percent}% similar.`, 'good');
-      reload();
+      dropReviewCard(candidateId, true);
     } catch (error) {
       alert(error.message);
     }
