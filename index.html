@@ -178,6 +178,7 @@
         </div>
         <div class="row">
           <button class="button primary" id="bulkMerge" disabled title="Merge every pending pair whose two copies already share one identical answer">Merge all agreeing</button>
+          <select id="reviewChapter" aria-label="Chapter"><option value="">All chapters</option></select>
           <select id="reviewFilter" aria-label="Queue filter">
             <option value="all">All pairs</option>
             <option value="agreeing">Answers agree</option>
@@ -193,6 +194,7 @@
           <button class="button ghost" id="reviewNext">Next ›</button>
         </div>
       </div>
+      <div id="reviewScope" class="status"></div>
       <div id="reviewBulk" class="status"></div>
       <div id="reviewList"><div class="empty">Loading…</div></div>
     </section>
@@ -802,26 +804,82 @@
 
   /* ---------------------------------------------------------------- near duplicates */
 
+  // The queue is worked one chapter at a time: pick a chapter, see how many of
+  // its pairs can merge today, then merge them one by one.
+  async function loadReviewChapters() {
+    const select = $('#reviewChapter');
+    const keep = select.value;
+    const mergeable = state.helpers
+      ? `abhyas_answers_mergeable(
+             abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options),
+             abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options))`
+      : 'false';
+    const rows = await sql(`
+      SELECT chapter_id, chapter_name,
+             count(*)::int AS pending,
+             count(*) FILTER (WHERE mergeable)::int AS ready
+        FROM (SELECT d.chapter_id,
+                     coalesce(c.chapter_name, 'chapter ' || d.chapter_id) AS chapter_name,
+                     ${mergeable} AS mergeable
+                FROM dedupe_review_candidates d
+                JOIN questions q1 ON q1.id = d.q1_id
+                JOIN questions q2 ON q2.id = d.q2_id
+                LEFT JOIN chapters c ON c.id = d.chapter_id
+               WHERE d.status = 'pending') scoped
+       GROUP BY 1, 2
+       ORDER BY pending DESC, chapter_name`, []);
+    const pending = rows.reduce((sum, row) => sum + num(row.pending), 0);
+    select.innerHTML = `<option value="">All chapters · ${fmt(pending)} pending</option>`
+      + rows.map(row => `<option value="${num(row.chapter_id)}" data-name="${esc(row.chapter_name)}">`
+        + `${esc(row.chapter_name)} · ${fmt(row.pending)}${state.helpers ? ` (${fmt(row.ready)} ready)` : ''}`
+        + '</option>').join('');
+    select.value = rows.some(row => String(row.chapter_id) === keep) ? keep : '';
+  }
+
   async function loadReview(offset) {
     state.reviewOffset = Math.max(0, offset);
     const target = $('#reviewList');
     target.innerHTML = '<div class="empty">Loading…</div>';
     $('#bulkMerge').disabled = !state.helpers;
+    try {
+      await loadReviewChapters();
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+      return;
+    }
     const wanted = $('#reviewStatus').value;
+    const chapter = $('#reviewChapter').value;
+    const scopeName = chapter
+      ? ($('#reviewChapter').selectedOptions[0]?.dataset.name || `chapter ${chapter}`)
+      : 'All chapters';
     // The queue can be worked one class at a time: pairs that can merge today,
     // or only the ones that need a decision.
     const keyOne = 'abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options)';
     const keyTwo = 'abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options)';
     const filter = $('#reviewFilter').value;
-    let filterSql = '';
-    if (state.helpers && filter === 'agreeing') filterSql = ` AND abhyas_answers_equivalent(${keyOne}, ${keyTwo})`;
-    if (state.helpers && filter === 'conflicts') filterSql = ` AND NOT abhyas_answers_equivalent(${keyOne}, ${keyTwo})`;
+    const where = ['d.status = $1'];
+    const params = [wanted];
+    if (state.helpers && filter === 'agreeing') where.push(`abhyas_answers_equivalent(${keyOne}, ${keyTwo})`);
+    if (state.helpers && filter === 'conflicts') where.push(`NOT abhyas_answers_equivalent(${keyOne}, ${keyTwo})`);
+    if (chapter) {
+      params.push(num(chapter));
+      where.push(`d.chapter_id = $${params.length}`);
+    }
+    const whereSql = where.join(' AND ');
     try {
-      const total = num((await sqlOne(`SELECT count(*)::int AS n
+      const counts = await sqlOne(`SELECT count(*)::int AS n,
+          ${state.helpers ? `count(*) FILTER (WHERE abhyas_answers_mergeable(${keyOne}, ${keyTwo}))::int` : '0'} AS ready
         FROM dedupe_review_candidates d
         JOIN questions q1 ON q1.id = d.q1_id
         JOIN questions q2 ON q2.id = d.q2_id
-        WHERE d.status = $1${filterSql}`, [wanted])).n);
+        WHERE ${whereSql}`, params);
+      const total = num(counts.n);
+      const ready = num(counts.ready);
+      $('#reviewScope').textContent = !state.helpers
+        ? `${scopeName} · ${fmt(total)} ${wanted}`
+        : wanted === 'pending'
+          ? `${scopeName} · ${fmt(total)} pending · ${fmt(ready)} can merge now · ${fmt(total - ready)} need an edit`
+          : `${scopeName} · ${fmt(total)} ${wanted} · ${fmt(ready)} would merge`;
       const rows = await sql(`
         SELECT d.id, d.chapter_id, d.q1_id, d.q2_id,
                d.stem_score::float AS stem_score, d.options_score::float AS options_score,
@@ -836,10 +894,13 @@
         JOIN questions q1 ON q1.id = d.q1_id
         JOIN questions q2 ON q2.id = d.q2_id
         LEFT JOIN chapters c ON c.id = d.chapter_id
-        WHERE d.status = $1${filterSql}
+        WHERE ${whereSql}
         ORDER BY d.stem_score DESC, d.options_score DESC, d.id
-        LIMIT 20 OFFSET $2`, [wanted, state.reviewOffset]);
+        LIMIT 20 OFFSET $${params.length + 1}`, [...params, state.reviewOffset]);
 
+      if (!rows.length && state.reviewOffset > 0) {
+        return loadReview(Math.max(0, state.reviewOffset - 20));
+      }
       $('#reviewPos').textContent = `${total ? state.reviewOffset + 1 : 0}–${Math.min(state.reviewOffset + 20, total)} of ${fmt(total)}`;
       $('#reviewPrev').disabled = state.reviewOffset <= 0;
       $('#reviewNext').disabled = state.reviewOffset + 20 >= total;
@@ -914,6 +975,7 @@
     }
   }
   $('#reviewStatus').onchange = () => loadReview(0);
+  $('#reviewChapter').onchange = () => loadReview(0);
   $('#reviewFilter').onchange = () => loadReview(0);
   $('#reviewPrev').onclick = () => loadReview(state.reviewOffset - 20);
   $('#reviewNext').onclick = () => loadReview(state.reviewOffset + 20);
@@ -969,26 +1031,28 @@
   $('#bulkMerge').onclick = bulkMergeAgreeing;
 
   async function mergeCandidate(candidateId, side, reload) {
-    if (!confirm('Merge these two questions? The other copy is deleted and an audit snapshot is kept.')) return;
     try {
-      const row = await sqlOne(`SELECT q1_id, q2_id, q1_identity_key, q2_identity_key
-        FROM dedupe_review_candidates WHERE id = $1`, [candidateId]);
-      const keeper = side === 'a' ? num(row.q1_id) : num(row.q2_id);
-      const duplicate = side === 'a' ? num(row.q2_id) : num(row.q1_id);
-      const signature = (side === 'a' ? row.q1_identity_key : row.q2_identity_key) || 'manual';
-      await sqlOne(`SELECT abhyas_merge_questions($1, $2, 'manual_near', $3) AS result`, [keeper, duplicate, signature]);
-      // Record how alike the two answers were, so an 80%-similar merge can be
-      // found and undone later; the duplicate row is gone after this call.
-      const keys = await sqlOne(`SELECT abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options) AS k1,
+      // Read both answers before the merge: the duplicate question is deleted by
+      // the merge, so its answer cannot be measured afterwards.
+      const row = await sqlOne(`SELECT q1_id, q2_id, q1_identity_key, q2_identity_key,
+          abhyas_answer_key(q1.correct_text, q1.correct_index, q1.options) AS k1,
           abhyas_answer_key(q2.correct_text, q2.correct_index, q2.options) AS k2
         FROM dedupe_review_candidates d
         JOIN questions q1 ON q1.id = d.q1_id
         JOIN questions q2 ON q2.id = d.q2_id
-        WHERE d.id = $1`, [candidateId]).catch(() => null);
-      const percent = keys ? (Identity.answerSimilarity(keys.k1, keys.k2) * 100).toFixed(1) : 'n/a';
+        WHERE d.id = $1`, [candidateId]);
+      if (!row) { alert('That pair is no longer in the queue.'); return; }
+      const keeper = side === 'a' ? num(row.q1_id) : num(row.q2_id);
+      const duplicate = side === 'a' ? num(row.q2_id) : num(row.q1_id);
+      const signature = (side === 'a' ? row.q1_identity_key : row.q2_identity_key) || 'manual';
+      const percent = (Identity.answerSimilarity(row.k1, row.k2) * 100).toFixed(1);
+      if (!confirm(`Merge #${duplicate} into #${keeper}?\n\nAnswers are ${percent}% similar.`
+        + ` #${duplicate} is deleted and a full snapshot is kept, so it can be traced.`)) return;
+      await sqlOne(`SELECT abhyas_merge_questions($1, $2, 'manual_near', $3) AS result`, [keeper, duplicate, signature]);
       await sql(`UPDATE dedupe_review_candidates SET status = 'merged', reviewed_at = now(),
         review_note = 'merged into #' || $2 || ' (answers ' || $3 || '% similar)' WHERE id = $1`,
         [candidateId, keeper, percent]);
+      status($('#reviewBulk'), `Merged #${duplicate} into #${keeper} — answers ${percent}% similar.`, 'good');
       reload();
     } catch (error) {
       alert(error.message);

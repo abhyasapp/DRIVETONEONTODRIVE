@@ -62,8 +62,10 @@ from your browser.
 - **Near duplicates** — the fuzzy queue: side-by-side compare, edit, merge, delete,
   reject, and **Merge all agreeing** — one audited sweep that merges every pending pair
   whose two copies already resolve to the same answer, in chunks, leaving unanswered and
-  conflicting pairs for a human. The queue filter (all / answers agree / conflicts only)
-  lets you work one class at a time.
+  conflicting pairs for a human. A chapter picker lists every chapter holding pending
+  pairs with its own counts — `221 pending · 92 can merge now · 129 need an edit` — so
+  one chapter can be finished before moving on; the queue filter (all / answers agree /
+  conflicts only) then narrows that chapter further.
 - **Questions** — search, filter (unanswered / duplicate members / human-corrected), edit, delete.
 - **Pipeline history** — the six most recent workflow runs with result and duration, plus a
   link to the full run log and the `pipeline-logs-<run_id>` artifact (7-day retention).
