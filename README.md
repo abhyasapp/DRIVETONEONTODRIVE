@@ -63,9 +63,17 @@ python -m sync.apply_corrections --apply --force --retry-backlog # full scan
 `--retry-backlog` prints a reason breakdown after applying, so a missing Drive
 file, a stale qid or an ambiguous text match is visible in the workflow log
 instead of silently sitting in the table.
+Corrections with an empty or out-of-range answer index are queued as
+`invalid_after_options` / `invalid_after_correct_index`; they are never applied
+with a blank answer.
 
-Exit codes: `0` ok, `1` a step failed, `2` pre-flight failed, `3` dedupe aborted.
-FATAL steps (turn the whole run red): `dedupe`, `export`, `upload`.
+Exit codes: `0` ok, `1` a fatal step failed, `2` pre-flight failed, `3` dedupe aborted.
+FATAL steps (turn the whole run red, and stop before later steps): `sync`,
+`corrections`, `dedupe`, `export`, `upload`. A failed Drive sync or correction
+pass must never publish stale Neon/Drive content, so those now fail closed.
+`sync` gets one automatic retry; correction HTTP calls retry transient
+timeouts, `429` and `5xx` with backoff.
+Every Actions run also writes a step table to the job summary.
 Export splits each subtopic into parts of 50 questions in order and only the
 last part carries the remainder (137 questions -> 50 / 50 / 37).
 `--stable-parts` assigns each question to a part by a hash of its DB id

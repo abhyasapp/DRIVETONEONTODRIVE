@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 
 import requests
 from psycopg2.extras import Json
@@ -38,6 +39,8 @@ load_dotenv()
 APPS_URL = os.getenv("ABHYAS_APPS_SCRIPT_URL")
 SYNC_KEY = os.getenv("ABHYAS_SYNC_KEY")
 FETCH_TIMEOUT = 90
+FETCH_ATTEMPTS = 4
+RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 class BackendError(RuntimeError):
@@ -113,16 +116,37 @@ def fetch_corrections(since_ms, limit=500):
         "limit": limit,
     })
 
-    try:
-        r = requests.post(
-            APPS_URL, data=body,
-            headers={"Content-Type": "text/plain"},
-            timeout=FETCH_TIMEOUT,
-        )
-    except requests.exceptions.Timeout:
-        raise BackendError(f"timeout after {FETCH_TIMEOUT}s reaching {APPS_URL}")
-    except requests.exceptions.ConnectionError as e:
-        raise BackendError(f"connection failed to {APPS_URL}: {type(e).__name__}")
+    r = None
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            r = requests.post(
+                APPS_URL, data=body,
+                headers={"Content-Type": "text/plain"},
+                timeout=FETCH_TIMEOUT,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt == FETCH_ATTEMPTS:
+                kind = "timeout" if isinstance(e, requests.exceptions.Timeout) else "connection failed"
+                raise BackendError(f"{kind} after {FETCH_ATTEMPTS} attempts reaching {APPS_URL}")
+            wait = min(30, 2 ** (attempt - 1))
+            print(f"  [backend] {type(e).__name__}; retrying in {wait}s "
+                  f"({attempt}/{FETCH_ATTEMPTS - 1})")
+            time.sleep(wait)
+            continue
+        except requests.exceptions.RequestException as e:
+            raise BackendError(f"request failed to {APPS_URL}: {type(e).__name__}: {e}")
+
+        if r.status_code in RETRY_STATUS and attempt < FETCH_ATTEMPTS:
+            retry_after = r.headers.get("Retry-After", "")
+            try:
+                wait = min(60, max(1, int(float(retry_after))))
+            except (TypeError, ValueError):
+                wait = min(30, 2 ** (attempt - 1))
+            print(f"  [backend] HTTP {r.status_code}; retrying in {wait}s "
+                  f"({attempt}/{FETCH_ATTEMPTS - 1})")
+            time.sleep(wait)
+            continue
+        break
 
     if r.status_code in (401, 403):
         raise BackendError(
@@ -132,7 +156,9 @@ def fetch_corrections(since_ms, limit=500):
     if 400 <= r.status_code < 500:
         raise BackendError(f"HTTP {r.status_code} — {r.text[:200]!r}")
     if r.status_code >= 500:
-        raise BackendError(f"HTTP {r.status_code} — {r.text[:200]!r}")
+        raise BackendError(
+            f"HTTP {r.status_code} after {FETCH_ATTEMPTS} attempts — {r.text[:200]!r}"
+        )
 
     try:
         payload = r.json()
@@ -270,6 +296,15 @@ def find_by_qid(cur, qid):
     return None, "qid_canonical_loop"
 
 
+def validate_after_answer(options, index):
+    """Return a backlog reason when a correction would blank the answer."""
+    if not isinstance(options, list) or not options:
+        return "invalid_after_options"
+    if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(options)):
+        return "invalid_after_correct_index"
+    return None
+
+
 def apply_one(cur, corr):
     uid = corr["uid"]
     corrected_at = corr["correctedAt"]
@@ -295,6 +330,11 @@ def apply_one(cur, corr):
         return None, "missing_before_after"
     if not isinstance(bo, list) or not isinstance(ao, list):
         return None, "invalid_before_or_after_options"
+    # Never blank an answer because a correction arrived with a missing or
+    # out-of-range index. Queue it for a human instead of writing NULL.
+    answer_error = validate_after_answer(ao, ac)
+    if answer_error:
+        return None, answer_error
 
     source_identity = identity(bq, bo)
     before_id = source_identity
@@ -321,16 +361,13 @@ def apply_one(cur, corr):
     new_text = normalize_question_text(aq)
     new_identity = identity(aq, ao)
     new_quality = compute_quality_score(ax, ao, len(new_text))
-    correct_text = ao[ac] if isinstance(ac, int) and not isinstance(ac, bool) and 0 <= ac < len(ao) else None
-
     if not source_key:
         before_number = re.match(r"^\s*(\d+)\s*[\.\)]", str(bq))
         source_key = source_question_key(
             before_number.group(1) if before_number else None, bq, bo)
 
-    valid_correct_index = (ac if isinstance(ac, int) and not isinstance(ac, bool)
-                           and 0 <= ac < len(ao) else None)
-    correct_text = ao[valid_correct_index] if valid_correct_index is not None else None
+    valid_correct_index = ac
+    correct_text = ao[valid_correct_index]
 
     cur.execute("""
         UPDATE questions q
@@ -433,7 +470,12 @@ def process_correction(cur, corr):
         cur.execute("ROLLBACK TO SAVEPOINT correction_item")
         cur.execute("RELEASE SAVEPOINT correction_item")
         reason = f"failed: {type(exc).__name__}: {exc}"[:500]
-        queue_backlog(cur, corr, reason)
+        try:
+            queue_backlog(cur, corr, reason)
+        except Exception as queue_exc:
+            # A malformed correction must not abort the rest of the batch.
+            return None, None, (f"{reason}; backlog write failed: "
+                                f"{type(queue_exc).__name__}: {queue_exc}")[:500]
         return None, None, str(exc)
 
 
@@ -603,8 +645,11 @@ def main():
         for uid, msg in errors[:20]:
             print(f"  {uid}: {msg}")
 
+    exit_code = 1 if (failed or (args.retry_backlog and backlog_stats["failed"])) else 0
     cur.close()
     conn.close()
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

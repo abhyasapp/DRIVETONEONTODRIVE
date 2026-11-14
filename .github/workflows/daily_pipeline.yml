@@ -49,8 +49,9 @@ jobs:
 
       - name: Smoke test (offline checks)
         run: |
+          set -euo pipefail
           python tests/smoke.py
-          python -m unittest tests.test_corrections
+          python -m unittest tests.test_corrections tests.test_dedupe_logic tests.test_pipeline
 
       # ----- credentials -------------------------------------------------
 

@@ -58,7 +58,7 @@ Do the same for `oauth-token.pickle` -> `OAUTH_TOKEN_PICKLE`.
 - Actions -> **Daily Pipeline** -> **Run workflow**. Tip: type `export` in "only" to test one step fast.
 - The first step "Check required secrets exist" prints `::error::Secret X is empty or not set` for anything missing.
 - "Write .env" prints each key's length (e.g. `GEMINI_API_KEY: 39 chars`). `0 chars` = not set or empty.
-- The job now turns **red** when any step fails, and `pipeline-logs-<run id>` is attached to every run.
+- The job turns **red** when a fatal step fails (`sync`, `corrections`, `dedupe`, `export`, `upload`); the job summary shows every step, and `pipeline-logs-<run id>` is attached to every run.
 
 ## Common mistakes
 

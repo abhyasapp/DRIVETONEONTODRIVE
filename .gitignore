@@ -108,3 +108,6 @@ venv*/
 # ─── Local test scratch (PGlite install for tests/test_admin_sql.mjs) ───
 .tmp/
 .cache/
+
+# ─── Attachments copied in by the desktop app ───────────
+.cloud-attachments/

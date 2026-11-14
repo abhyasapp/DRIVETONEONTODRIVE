@@ -19,9 +19,9 @@ Steps (11):
 
 Behaviour:
   * Exit code is NON-ZERO if pre-flight fails or a FATAL_STEPS member
-    (dedupe / export / upload) fails. Non-fatal failures (corrections,
-    kw_*, gemini, chapters) are logged in the SUMMARY but do not turn
-    the run red.
+    (sync / corrections / dedupe / export / upload) fails. Non-fatal
+    failures (kw_*, gemini, chapters) are logged in the SUMMARY but do
+    not turn the run red.
   * --quiet still prints the last lines of any failing step (tracebacks).
   * Optional steps are skipped cleanly when their script is missing.
   * UTF-8 safe.
@@ -136,6 +136,8 @@ PARALLEL_PREFIX = "kw_"
 
 # Only these step failures turn the run red (exit 1). Other failures are
 # logged in the SUMMARY but do not fail CI.
+#   - sync / corrections: if they fail, export would publish stale Neon
+#     data while Drive and the app appear to have updated. Fail closed.
 #   - dedupe: pool integrity. If we ship an un-deduped pool, downstream
 #     classify/export operate on garbage.
 #   - export: if export fails but upload succeeds, Drive keeps serving
@@ -144,7 +146,12 @@ PARALLEL_PREFIX = "kw_"
 #     JSON while Neon moved on — silent divergence. Must fail loudly.
 # Add "sync" here if you want a Drive outage to red the run (arguably
 # correct: with sync failed, the pipeline re-exports stale Neon data).
-FATAL_STEPS = {"dedupe", "export", "upload"}
+FATAL_STEPS = {"sync", "corrections", "dedupe", "export", "upload"}
+
+# A failed sync is worth one retry before the run stops; corrections retries
+# its own HTTP calls internally. Keep the fatal set above for everything that
+# must not silently publish stale content.
+RETRY_ONCE_STEPS = {"sync"}
 
 # Steps that must NOT be retried automatically.
 NO_RETRY_STEPS = {"gemini", "upload", "corrections"}
@@ -398,6 +405,11 @@ def preflight(step_names):
     if needs_db and not os.getenv("DATABASE_URL"):
         problems.append("DATABASE_URL not set in .env")
 
+    if "corrections" in set(step_names):
+        for key in ("ABHYAS_APPS_SCRIPT_URL", "ABHYAS_SYNC_KEY"):
+            if not os.getenv(key):
+                problems.append(f"{key} not set in .env (needed by corrections)")
+
     # Only `sync` (Drive -> DB) reads with the service account; upload and
     # chapters_up use OAuth. Demanding one when the other is selected used
     # to block runs that legitimately have no sync credentials.
@@ -568,7 +580,7 @@ def run_parallel(group, fh, quiet):
             ok, elapsed, note = run_step(name, label, script, args,
                                          timeout, fh, quiet)
             if (not ok
-                    and name not in FATAL_STEPS
+                    and (name not in FATAL_STEPS or name in RETRY_ONCE_STEPS)
                     and name not in NO_RETRY_STEPS
                     and note != "missing script"):
                 log(fh, f"  retrying {name} after {note} ...", prefix=name)
@@ -588,6 +600,32 @@ def run_parallel(group, fh, quiet):
     for t in threads:
         t.join()
     return results
+
+
+def write_ci_summary(results, aborted):
+    """Render the run in GitHub Actions without another dependency."""
+    path = os.getenv("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    failed = [r for r in results if not r[1]]
+    overall = "ABORTED" if aborted else ("FAILED" if failed else "OK")
+    lines = [
+        "## Abhyas daily pipeline",
+        "",
+        f"**Result:** {overall}  ",
+        f"**Finished:** {datetime.now():%Y-%m-%d %H:%M:%S}  ",
+        "",
+        "| Step | Status | Time | Note |",
+        "|---|---:|---:|---|",
+    ]
+    for name, ok, elapsed, note in results:
+        safe_note = str(note).replace("|", "\\|")
+        lines.append(f"| `{name}` | {'OK' if ok else 'FAILED'} | {elapsed:.1f}s | {safe_note} |")
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -697,7 +735,7 @@ def main():
                                              timeout, fh, args.quiet)
 
                 if (not ok
-                        and name not in FATAL_STEPS
+                        and (name not in FATAL_STEPS or name in RETRY_ONCE_STEPS)
                         and name not in NO_RETRY_STEPS
                         and note != "missing script"):
                     log(fh, f"  retrying {name} after {note} ...", prefix=name)
@@ -749,10 +787,11 @@ def main():
         log(fh, f"Log: {LOG_FILE}")
         log(fh, "=" * 66)
 
+    write_ci_summary(results, aborted)
+
     # Non-zero exit so CI (GitHub Actions / Task Scheduler) notices failures.
     # Only failures in FATAL_STEPS turn the run red. Non-fatal failures
-    # (corrections, kw_*, gemini, export, chapters) are already summarized
-    # in the SUMMARY block above; they do not fail CI.
+    # (kw_*, gemini, chapters) are already summarized above; they do not fail CI.
     if aborted:
         sys.exit(3)
     fatal_failures = [r for r in failed if r[0] in FATAL_STEPS]
