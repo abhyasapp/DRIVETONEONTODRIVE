@@ -3,6 +3,10 @@
 Drive -> Neon (sync) -> corrections -> dedupe -> keyword + Gemini classify ->
 export JSON -> upload to Drive -> chapters-data.js -> upload.
 
+Corrections now carry a stable `qid`; `sync/apply_corrections.py` resolves that
+Neon question id first (following canonical reassignments) and only falls back
+to the old before-text/identity matcher when the id is absent or stale.
+
 ```
 .github/workflows/daily_pipeline.yml   CI schedule + manual run
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)

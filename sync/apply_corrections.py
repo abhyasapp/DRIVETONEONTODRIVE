@@ -175,7 +175,7 @@ def find_match(cur, before_question, before_options, before_identity, file_id=No
         number_match = re.match(r"^\s*(\d+)\s*[.)]", str(before_question))
         source_number = str(number_match.group(1)) if number_match else ""
         source_key = source_question_key(source_number or None, before_question, before_options)
-        cur.execute("""SELECT q.id,q.question_text,q.options,q.file_ref_id,
+        cur.execute(r"""SELECT q.id,q.question_text,q.options,q.file_ref_id,
                 q.source_question_key,q.corrected_at,f.file_id,c.id
             FROM questions q JOIN files f ON f.id=q.file_ref_id
             LEFT JOIN books b ON b.id=f.book_id
@@ -201,7 +201,7 @@ def find_match(cur, before_question, before_options, before_identity, file_id=No
             return None,f"ambiguous_identity_in_source_file({len(local)})"
 
         norm=normalize_question_text(before_question)
-        cur.execute("""SELECT q.id,q.question_text,q.options,q.file_ref_id,
+        cur.execute(r"""SELECT q.id,q.question_text,q.options,q.file_ref_id,
                 q.source_question_key,q.corrected_at,f.file_id,c.id
             FROM questions q JOIN files f ON f.id=q.file_ref_id
             LEFT JOIN books b ON b.id=f.book_id
@@ -230,7 +230,7 @@ def find_match(cur, before_question, before_options, before_identity, file_id=No
         return None,f"ambiguous_identity({len(rows)})"
 
     norm=normalize_question_text(before_question)
-    cur.execute("""SELECT q.id,q.question_text,q.options,q.file_ref_id,
+    cur.execute(r"""SELECT q.id,q.question_text,q.options,q.file_ref_id,
             q.source_question_key,q.corrected_at,f.file_id,c.id
         FROM questions q LEFT JOIN files f ON f.id=q.file_ref_id
         LEFT JOIN books b ON b.id=f.book_id LEFT JOIN chapters c ON c.id=b.chapter_id
@@ -243,6 +243,30 @@ def find_match(cur, before_question, before_options, before_identity, file_id=No
     if len(rows)>1:
         return None,f"ambiguous_text({len(rows)})"
     return None,"not_found"
+
+
+def find_by_qid(cur, qid):
+    """Resolve the stable question id first, following canonical_id hops."""
+    raw = str(qid or "").strip()
+    if not raw.isdigit():
+        return None, "qid_missing"
+    current = int(raw)
+    for _ in range(10):
+        cur.execute("""SELECT q.id,q.question_text,q.options,q.file_ref_id,
+                q.source_question_key,q.corrected_at,f.file_id,c.id,
+                q.canonical_id
+            FROM questions q
+            LEFT JOIN files f ON f.id=q.file_ref_id
+            LEFT JOIN books b ON b.id=f.book_id
+            LEFT JOIN chapters c ON c.id=b.chapter_id
+            WHERE q.id=%s""", (current,))
+        row = cur.fetchone()
+        if row is None:
+            return None, "qid_not_found"
+        if row[8] is None:
+            return row[:8], "qid"
+        current = row[8]
+    return None, "qid_canonical_loop"
 
 
 def apply_one(cur, corr):
@@ -273,7 +297,9 @@ def apply_one(cur, corr):
 
     source_identity = identity(bq, bo)
     before_id = source_identity
-    row, why = find_match(cur, bq, bo, before_id, corr.get("fileId"))
+    row, why = find_by_qid(cur, corr.get("qid"))
+    if row is None:
+        row, why = find_match(cur, bq, bo, before_id, corr.get("fileId"))
     if row is None:
         row, why = find_match(cur, bq, bo, legacy_identity(bq, bo), corr.get("fileId"))
         if row is not None:
