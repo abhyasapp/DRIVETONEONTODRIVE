@@ -54,6 +54,7 @@ Usage:
 """
 
 import io
+import os
 import re
 import sys
 import json
@@ -161,6 +162,16 @@ LEVEL_CONFIG = {
         "use_subfolder_as_book": True,
         "use_file_as_book":      False,
         "root_file_map": {},
+        # Additive roots: scanned in addition to `root`, never instead of it.
+        # Existing DB files therefore cannot be orphaned by adding one.
+        "extra_roots": [
+            {
+                "root":        "1gJbMt1FbmIg82xXobNW5iOGkpELyPcvp",
+                "chapter_key": "8",
+                "book":        "Level 7 Engineering",
+                "flatten":     True,
+            },
+        ],
     },
 }
 
@@ -219,9 +230,15 @@ _drive_lock = threading.Lock()
 
 
 def make_drive():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
+    # Production uses the service account; local runs fall back to the shared
+    # OAuth token so a read-only dry run does not require a downloaded key.
+    if os.path.exists(SERVICE_ACCOUNT_FILE):
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+    else:
+        from utils.drive_auth import get_credentials
+        creds = get_credentials()
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -403,6 +420,26 @@ def walk_level(drive, level_key):
                 "modified_time": item.get("modifiedTime"),
                 "md5":           item.get("md5Checksum"),
             }
+
+    # Additive chapter roots (for content that lives outside the main tree).
+    # `flatten` uses the JSON file stem as the subtopic instead of its folder
+    # path, which keeps names readable for a single-folder book.
+    for extra in cfg.get("extra_roots", []):
+        print(f"    listing extra root: {extra['root']} ...")
+        n = 0
+        for f, subtopic in walk_json_recursive(drive, extra["root"]):
+            if extra.get("flatten"):
+                subtopic = f["name"][:-5]
+            n += 1
+            yield {
+                "chapter_key": extra["chapter_key"],
+                "book":        extra.get("book") or default_book,
+                "subtopic":    subtopic,
+                "file_id":     f["id"],
+                "modified_time": f.get("modifiedTime"),
+                "md5":           f.get("md5Checksum"),
+            }
+        print(f"      extra root: {n} JSON file(s)")
 
 
 def download_parse(drive, file_id):
