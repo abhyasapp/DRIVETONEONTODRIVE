@@ -64,9 +64,13 @@ def strip_leading_number(text):
     return _LEAD_NUM_RE.sub("", str(text or "")).strip()
 
 
-def build_question(new_number, q_text, options, correct_idx, explanation, images):
+def build_question(new_number, q_text, options, correct_idx, explanation, images,
+                   qid=None):
     body = strip_leading_number(q_text)
     item = {
+        # Stable database id (questions.id). "q" is renumbered on every export,
+        # so reports/corrections must key on this, never on file position.
+        "id": qid,
         "q": f"{new_number}. {body}",
         "options": list(options or []),
         # unanswered stays null (never pretend option A is correct).
@@ -278,7 +282,7 @@ def export_level(cur, level_key, include_unanswered, dry_run,
                 for part_idx, chunk in enumerate(chunks, 1):
                     payload = [
                         build_question(i, q_text, options, correct_idx,
-                                       explain, images_by_qid.get(qid))
+                                       explain, images_by_qid.get(qid), qid=qid)
                         for i, (qid, q_text, options, correct_idx, explain)
                         in enumerate(chunk, 1)
                     ]

@@ -183,7 +183,14 @@ def source_location_key_for_file(cur, file_id):
     return next(iter(keys)) if len(keys) == 1 else None
 
 
-def find_match(cur, before_question, before_options, before_identity, file_id=None):
+def find_match(cur, before_question, before_options, before_identity, file_id=None,
+               qid=None):
+    # Tier 0: a stable id is authoritative. Position/number/text matching below
+    # is only for old events that predate the exported "id" field.
+    if qid is not None:
+        row = match_by_qid(cur, qid)
+        if row is not None:
+            return row, "qid"
     base = """
         SELECT q.id, q.question_text, q.options, q.file_ref_id,
                q.source_question_key, q.corrected_at, f.file_id,
@@ -294,6 +301,12 @@ def find_by_qid(cur, qid):
             return row[:8], "qid"
         current = row[8]
     return None, "qid_canonical_loop"
+
+
+def match_by_qid(cur, qid):
+    """Return the live 8-column row for a stable question id, or None."""
+    row, _why = find_by_qid(cur, qid)
+    return row
 
 
 def validate_after_answer(options, index):
@@ -408,10 +421,20 @@ def apply_one(cur, corr):
         JOIN books b ON b.id=f.book_id WHERE f.id=%s""", (file_ref_id,))
     location_row = cur.fetchone()
     source_location = source_location_key(*location_row[:2]) if location_row else None
-    before_number = re.match(r"^\s*(\d+)\s*[\.\)]", str(bq))
-    source_number = str(before_number.group(1)) if before_number else ""
-    if not source_number and source_key.startswith("n:"):
+    # Key the alias by the ORIGINAL source question, not by whatever the admin
+    # or student saw. After the UPDATE, questions.source_identity holds the
+    # first-ever identity (COALESCE keeps it), so a second correction still
+    # points at the untouched source file.
+    cur.execute("SELECT source_identity FROM questions WHERE id = %s", (qid,))
+    stored = cur.fetchone()
+    alias_source_identity = stored[0] if stored and stored[0] else source_identity
+    # Exported files are renumbered, so the number inside `before.question` is
+    # the export position, not the source number. Prefer the stored source key.
+    if source_key.startswith("n:"):
         source_number = source_key[2:]
+    else:
+        before_number = re.match(r"^\s*(\d+)\s*[\.\)]", str(bq))
+        source_number = str(before_number.group(1)) if before_number else ""
     if source_location is None:
         raise RuntimeError("correction matched but source file path could not be resolved")
     cur.execute("""
@@ -420,7 +443,7 @@ def apply_one(cur, corr):
              question_text, options, correct_index, correct_text, explanation,
              identity_key, quality_score, corrected_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (chapter_id, source_identity, source_location, source_number,
+    """, (chapter_id, alias_source_identity, source_location, source_number,
           new_text, Json(ao), valid_correct_index, correct_text, ax,
           new_identity, new_quality, corrected_at))
 

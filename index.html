@@ -1357,7 +1357,8 @@
     try {
       const row = await sqlOne(`
         SELECT q.id, q.question_number, q.question_text, q.options, q.correct_index,
-               q.correct_text, q.explanation, q.identity_key, q.source_question_key,
+               q.correct_text, q.explanation, q.identity_key, q.source_identity,
+               q.source_question_key,
                q.raw, b.book_name, f.subtopic, c.id AS chapter_id, c.chapter_name
         FROM questions q
         LEFT JOIN files f ON f.id = q.file_ref_id
@@ -1381,7 +1382,8 @@
         source_question_key: row.source_question_key,
         question_number: row.question_number,
         raw: row.raw,
-        identity_key: row.identity_key
+        identity_key: row.identity_key,
+        source_identity: row.source_identity
       });
       $('#editorMeta').textContent = `#${id} · ${row.chapter_name || 'no chapter'} · ${row.book_name || 'no book'}`;
       status($('#editorStatus'), '', '');
@@ -1415,7 +1417,10 @@
       const newIdentity = await Identity.identity(text, options);
       const correctText = correctIndex === null ? null : options[correctIndex];
       const quality = Identity.qualityScore(explanation, options, text.length);
-      const sourceIdentity = context.identity_key || newIdentity;
+      // Key the alias by the ORIGINAL source identity. identity_key is the
+      // post-edit identity after a first correction, which would never match
+      // the untouched source file again on the next sync.
+      const sourceIdentity = context.source_identity || context.identity_key || newIdentity;
       const sourceNumber = String(context.source_question_key || '').startsWith('n:')
         ? String(context.source_question_key).slice(2)
         : (String((context.raw && context.raw.q) || '').match(/^\s*(\d+)\s*[.)]/) || [])[1] || '';

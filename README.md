@@ -25,6 +25,8 @@ dedupe/      dedupe_exact (pipeline), dedupe_review (dry-run report)
              near-duplicates (fuzzy): tools/near_duplicates.sql
 classify/    classify_any_level (keywords), classify_with_gemini (LLM)
 export/      export_any_level, generate_chapters_data_all
+             every exported question carries `id` = questions.id, so reports
+             and corrections stay stable even when parts are renumbered
 upload/      upload_any_level, upload_chapters_data
              safety: the prune pass is skipped for a level whenever any
              local file cannot be mapped to a DB subtopic, so good Drive
@@ -48,7 +50,7 @@ python -m pipeline.run_pipeline --list         # step names
 python -m pipeline.run_pipeline --dry-run
 python -m pipeline.run_pipeline --only export,upload
 python -m pipeline.run_pipeline --skip-gemini
-python -m unittest tests.test_corrections      # qid + backlog retry checks
+python -m unittest tests.test_corrections tests.test_apply_corrections_qid # qid + backlog retry checks
 ```
 
 Correction-only runs:
