@@ -7,6 +7,11 @@ Corrections now carry a stable `qid`; `sync/apply_corrections.py` resolves that
 Neon question id first (following canonical reassignments) and only falls back
 to the old before-text/identity matcher when the id is absent or stale.
 
+The daily pipeline also retries `correction_backlog` rows after the Drive sync.
+A correction whose source file was missing is therefore applied automatically
+once that file reaches Neon, without editing the backend watermark. The retry is
+bounded per run (`--backlog-limit`, default 100) and respects `--level`.
+
 ```
 .github/workflows/daily_pipeline.yml   CI schedule + manual run
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)
@@ -43,7 +48,21 @@ python -m pipeline.run_pipeline --list         # step names
 python -m pipeline.run_pipeline --dry-run
 python -m pipeline.run_pipeline --only export,upload
 python -m pipeline.run_pipeline --skip-gemini
+python -m unittest tests.test_corrections      # qid + backlog retry checks
 ```
+
+Correction-only runs:
+
+```bash
+python -m sync.apply_corrections                         # dry run, current watermark
+python -m sync.apply_corrections --apply                 # apply new corrections
+python -m sync.apply_corrections --apply --retry-backlog # also retry queued rows
+python -m sync.apply_corrections --apply --force --retry-backlog # full scan
+```
+
+`--retry-backlog` prints a reason breakdown after applying, so a missing Drive
+file, a stale qid or an ambiguous text match is visible in the workflow log
+instead of silently sitting in the table.
 
 Exit codes: `0` ok, `1` a step failed, `2` pre-flight failed, `3` dedupe aborted.
 FATAL steps (turn the whole run red): `dedupe`, `export`, `upload`.

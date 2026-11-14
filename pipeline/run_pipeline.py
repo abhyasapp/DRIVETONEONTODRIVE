@@ -6,7 +6,7 @@ Daily pipeline: sync -> corrections -> dedupe -> classify -> export -> upload ->
 
 Steps (11):
    1. sync         sync_any_level.py all
-   2. corrections  apply_corrections.py --apply
+   2. corrections  apply_corrections.py --apply --retry-backlog
    3. dedupe       dedupe_exact.py --apply --quiet
    4. kw_l5        classify_any_level.py level5   / run in
    5. kw_l7        classify_any_level.py level7    |  parallel
@@ -109,7 +109,7 @@ STEPS = [
     ("sync",        "Sync from Drive",
      "sync.sync_any_level", ["all"],                        1800),
     ("corrections", "Apply corrections to Neon",
-     "sync.apply_corrections", ["--apply"],                  600),
+     "sync.apply_corrections", ["--apply", "--retry-backlog"], 600),
     # v7 dedupe: no --no-near flag (removed in v7, run near-diff via --samples)
     ("dedupe",      "Exact dedupe (content identity, per chapter, v9)",
      "dedupe.dedupe_exact", ["--apply", "--quiet"],           900),

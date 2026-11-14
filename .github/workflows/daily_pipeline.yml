@@ -48,7 +48,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Smoke test (offline checks)
-        run: python tests/smoke.py
+        run: |
+          python tests/smoke.py
+          python -m unittest tests.test_corrections
 
       # ----- credentials -------------------------------------------------
 

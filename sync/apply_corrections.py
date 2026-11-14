@@ -12,6 +12,7 @@ Usage:
     python apply_corrections.py                        # dry-run
     python apply_corrections.py --apply                # write
     python apply_corrections.py --apply --force        # ignore last_read
+    python apply_corrections.py --apply --retry-backlog # also retry queued rows
     python apply_corrections.py --apply --level level5 # one level only
 """
 import argparse
@@ -404,11 +405,93 @@ def apply_one(cur, corr):
     return qid, f"applied_{why}"
 
 
+def delete_backlog(cur, corr):
+    cur.execute("DELETE FROM correction_backlog WHERE uid = %s AND corrected_at = %s",
+                (corr.get("uid"), corr.get("correctedAt")))
+
+
+def queue_backlog(cur, corr, reason):
+    cur.execute("""
+        INSERT INTO correction_backlog (uid, corrected_at, correction, reason)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (uid, corrected_at) DO UPDATE SET
+            correction = EXCLUDED.correction,
+            reason = EXCLUDED.reason,
+            attempts = correction_backlog.attempts + 1,
+            updated_at = now()
+    """, (corr.get("uid", "unknown"), corr.get("correctedAt"), Json(corr), reason))
+
+
+def process_correction(cur, corr):
+    """Apply one correction atomically; on failure keep it in the backlog."""
+    cur.execute("SAVEPOINT correction_item")
+    try:
+        qid, why = apply_one(cur, corr)
+        cur.execute("RELEASE SAVEPOINT correction_item")
+        return qid, why, None
+    except Exception as exc:
+        cur.execute("ROLLBACK TO SAVEPOINT correction_item")
+        cur.execute("RELEASE SAVEPOINT correction_item")
+        reason = f"failed: {type(exc).__name__}: {exc}"[:500]
+        queue_backlog(cur, corr, reason)
+        return None, None, str(exc)
+
+
+def retry_backlog(cur, limit, level_filter=None, skip_keys=None):
+    """Retry queued corrections, e.g. after their source file is imported."""
+    skip_keys = skip_keys or set()
+    cur.execute("""
+        SELECT correction, attempts FROM correction_backlog
+        ORDER BY updated_at ASC, uid ASC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    stats = {"applied": 0, "skipped": 0, "failed": 0, "errors": []}
+    for corr, attempts in rows:
+        if not isinstance(corr, dict):
+            stats["skipped"] += 1
+            continue
+        if (corr.get("uid"), corr.get("correctedAt")) in skip_keys:
+            continue
+        if level_filter and not level_filter(corr.get("fileId")):
+            stats["skipped"] += 1
+            continue
+        qid, why, err = process_correction(cur, corr)
+        uid = corr.get("uid", "unknown")
+        if err:
+            stats["failed"] += 1
+            stats["errors"].append((uid, err))
+            print(f"  [backlog] {uid}: FAILED — {err}")
+        elif why == "already_applied":
+            # The row was applied by an earlier run; the backlog entry is stale.
+            delete_backlog(cur, corr)
+            stats["skipped"] += 1
+            print(f"  [backlog] {uid}: removed stale queued row")
+        elif why.startswith("applied"):
+            stats["applied"] += 1
+            print(f"  [backlog] {uid}: {why} qid={qid}")
+        else:
+            stats["skipped"] += 1
+            print(f"  [backlog] {uid}: still queued ({why}, attempt {attempts + 1})")
+    return stats
+
+
+def backlog_breakdown(cur):
+    cur.execute("""
+        SELECT reason, count(*) FROM correction_backlog
+        GROUP BY reason ORDER BY count(*) DESC, reason ASC
+    """)
+    return cur.fetchall()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--level", default=None)
+    ap.add_argument("--retry-backlog", action="store_true",
+                    help="retry corrections already queued by an earlier run")
+    ap.add_argument("--backlog-limit", type=int, default=100,
+                    help="maximum backlog rows to retry per run (default 100)")
     args = ap.parse_args()
 
     dsn = os.getenv("DATABASE_URL")
@@ -465,26 +548,11 @@ def main():
         if args.level and not file_in_level(c.get("fileId")):
             skipped += 1
             continue
-        cur.execute("SAVEPOINT correction_item")
-        try:
-            qid, why = apply_one(cur, c)
-            cur.execute("RELEASE SAVEPOINT correction_item")
-        except Exception as e:
-            cur.execute("ROLLBACK TO SAVEPOINT correction_item")
-            cur.execute("RELEASE SAVEPOINT correction_item")
+        qid, why, err = process_correction(cur, c)
+        if err:
             failed += 1
-            errors.append((c.get("uid"), str(e)))
-            cur.execute("""
-                INSERT INTO correction_backlog (uid, corrected_at, correction, reason)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (uid, corrected_at) DO UPDATE SET
-                    correction = EXCLUDED.correction,
-                    reason = EXCLUDED.reason,
-                    attempts = correction_backlog.attempts + 1,
-                    updated_at = now()
-            """, (c.get("uid", "unknown"), c.get("correctedAt"), Json(c),
-                  f"failed: {type(e).__name__}: {e}"[:500]))
-            print(f"  [{i}] {c.get('uid')}: FAILED — {e}")
+            errors.append((c.get("uid"), err))
+            print(f"  [{i}] {c.get('uid')}: FAILED — {err}")
             continue
 
         if why.startswith("applied"):
@@ -495,10 +563,22 @@ def main():
             if why != "already_applied":
                 print(f"  [{i}] {c.get('uid')}: queued ({why})")
 
+    backlog_stats = {"applied": 0, "skipped": 0, "failed": 0, "errors": []}
+    if args.retry_backlog:
+        print()
+        print(f"Retrying up to {args.backlog_limit} queued correction(s)...")
+        processed = {(c.get("uid"), c.get("correctedAt")) for c in corrections}
+        backlog_stats = retry_backlog(
+            cur, args.backlog_limit,
+            (lambda fid: file_in_level(fid)) if args.level else None,
+            processed,
+        )
+
     print()
-    print(f"  applied: {applied}")
-    print(f"  skipped: {skipped}")
-    print(f"  failed:  {failed}")
+    print(f"  new corrections: applied {applied}, skipped {skipped}, failed {failed}")
+    if args.retry_backlog:
+        print(f"  backlog retry:   applied {backlog_stats['applied']}, "
+              f"still queued {backlog_stats['skipped']}, failed {backlog_stats['failed']}")
 
     if args.apply:
         if server_now:
@@ -506,11 +586,17 @@ def main():
         conn.commit()
         cur.execute("SELECT count(*) FROM correction_backlog")
         print(f"  correction backlog: {cur.fetchone()[0]}")
+        breakdown = backlog_breakdown(cur)
+        if breakdown:
+            print("  backlog reasons:")
+            for reason, count in breakdown:
+                print(f"    {count:>3}  {reason}")
         print("  Committed.")
     else:
         conn.rollback()
         print("  Dry-run — no changes written.")
 
+    errors.extend(backlog_stats["errors"])
     if errors:
         print()
         print("Errors:")
