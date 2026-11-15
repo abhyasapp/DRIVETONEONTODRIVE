@@ -6,15 +6,15 @@ Reads the DB and writes abhyas_export/chapters-data.js.
 
 Every chapter ends with TWO extra subtopics:
 
-    <prefix>.<N+1> Mixed Questions    — pooled unclassified, 50q parts
-    <prefix>.<N+2> Original Questions — every unique source file
+    <prefix>.<N+1> Mixed Questions    -- pooled unclassified, 50q parts
+    <prefix>.<N+2> Original Questions -- every unique source file
 
 Changes since v7:
-  • Original Questions labels are now meaningful:
-      – L5 / L7 :  "BOOK.RANGE"           e.g. "DPARSAD.1-100"
-      – GK      :  the filename stem      e.g. "constitution"
-    No more "DPARSAD 1", "DPARSAD 2", "GATE 1", … running indices.
-  • GK groups by *file* (topic) instead of by the meaningless "GATE" book.
+  ? Original Questions labels are now meaningful:
+      -- L5 / L7 :  "BOOK.RANGE"           e.g. "DPARSAD.1-100"
+      -- GK      :  the filename stem      e.g. "constitution"
+    No more "DPARSAD 1", "DPARSAD 2", "GATE 1", ... running indices.
+  ? GK groups by *file* (topic) instead of by the meaningless "GATE" book.
 
 The ChapterData accessor API at the bottom is preserved unchanged.
 """
@@ -32,15 +32,15 @@ conn = db_connect()
 cur = conn.cursor()
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------
 # helpers
-# ════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------
 
 def next_two_prefixes(real_codes):
     """
-    Given real subtopic codes for a chapter (e.g. ['3.1','3.2',…,'3.6']),
+    Given real subtopic codes for a chapter (e.g. ['3.1','3.2',...,'3.6']),
     return the two codes Mixed Questions and Original Questions should
-    use. Example: ['3.1'…'3.6'] -> ('3.7', '3.8'). Returns (None, None)
+    use. Example: ['3.1'...'3.6'] -> ('3.7', '3.8'). Returns (None, None)
     for a chapter with no real subtopics.
     """
     parsed = []
@@ -80,7 +80,7 @@ _BOOK_CANON = {
 
 def canon_book(name):
     """
-    Map messy book_name variants onto canonical labels — but only exact
+    Map messy book_name variants onto canonical labels -- but only exact
     case/punctuation variants of the same name collapse. 'dparsad' and
     'd parsad' both become 'DPARSAD'; 'D parsad old book' stays itself.
 
@@ -98,9 +98,9 @@ def canon_book(name):
     return name.strip()
 
 
-# ── Original-Questions label helpers ───────────────────────────────────
-# Matches "1-100", "1 – 100", "1 to 100", "1_100", "Q1–100" …
-_RANGE_RE = re.compile(r"(\d+)\s*(?:[-–—]|to|_)\s*(\d+)\b")
+# ?? Original-Questions label helpers ???????????????????????????????????
+# Matches "1-100", "1 -- 100", "1 to 100", "1_100", "Q1--100" ...
+_RANGE_RE = re.compile(r"(\d+)\s*(?:[-----]|to|_)\s*(\d+)\b")
 
 
 def _range_of(s):
@@ -150,9 +150,9 @@ def order_key(ch_key):
         return (1, ch_key)
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------
 # main build
-# ════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------
 
 cur.execute("""
     SELECT level_key, label FROM levels
@@ -170,7 +170,7 @@ for level_key, label in levels:
     CH_NAMES[level_key]     = {}
     DRIVE[level_key]        = {}
 
-    # ── chapters ──
+    # ?? chapters ??
     cur.execute("""
         SELECT chapter_key, chapter_name FROM chapters
         WHERE level_id = (SELECT id FROM levels WHERE level_key = %s)
@@ -181,7 +181,7 @@ for level_key, label in levels:
         CH_NAMES[level_key][ch_key] = ch_name
         DRIVE[level_key][ch_key]    = {}
 
-    # ── real subtopic codes per chapter ──
+    # ?? real subtopic codes per chapter ??
     cur.execute("""
         SELECT c.chapter_key, s.code
         FROM subtopics s JOIN chapters c ON c.id = s.chapter_id
@@ -192,7 +192,7 @@ for level_key, label in levels:
     for ch_key, code in cur.fetchall():
         codes_by_chapter.setdefault(ch_key, []).append(code)
 
-    # ── classified exports (non-mixedqn) ──
+    # ?? classified exports (non-mixedqn) ??
     cur.execute("""
         SELECT c.chapter_key, s.code, s.title, ef.part_number, ef.drive_file_id
         FROM export_files ef
@@ -204,7 +204,7 @@ for level_key, label in levels:
     """, (level_key,))
     classified_rows = cur.fetchall()
 
-    # ── mixedqn exports ──
+    # ?? mixedqn exports ??
     cur.execute("""
         SELECT c.chapter_key, ef.part_number, ef.drive_file_id
         FROM export_files ef
@@ -216,7 +216,7 @@ for level_key, label in levels:
     """, (level_key,))
     mixed_rows = cur.fetchall()
 
-    # ── source files (for Original Questions) ──
+    # ?? source files (for Original Questions) ??
     cur.execute("""
         SELECT c.chapter_key, b.book_name, f.subtopic, f.file_id
         FROM files f
@@ -227,9 +227,9 @@ for level_key, label in levels:
     """, (level_key,))
     source_rows = cur.fetchall()
 
-    # ─────────────────────────────────────────────────────────────────
-    # 1) classified subtopics — "All" or "part N"
-    # ─────────────────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????????????????
+    # 1) classified subtopics -- "All" or "part N"
+    # ?????????????????????????????????????????????????????????????????
     for ch_key, code, title, part, fid in classified_rows:
         sub_label = f"{code} {title}"
         bucket = DRIVE[level_key][ch_key].setdefault(sub_label, {})
@@ -240,9 +240,9 @@ for level_key, label in levels:
             if len(bucket) == 1 and "part 1" in bucket:
                 DRIVE[level_key][ch_key][sub_label] = {"All": bucket["part 1"]}
 
-    # ─────────────────────────────────────────────────────────────────
-    # 2) Mixed Questions — parts 1..N, skip if empty
-    # ─────────────────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????????????????
+    # 2) Mixed Questions -- parts 1..N, skip if empty
+    # ?????????????????????????????????????????????????????????????????
     mixed_by_chapter = {}
     for ch_key, part, fid in mixed_rows:
         mixed_by_chapter.setdefault(ch_key, []).append((part, fid))
@@ -259,18 +259,18 @@ for level_key, label in levels:
             f"part {part}": fid for part, fid in parts
         }
 
-    # ─────────────────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????????????????
     # 3) Original Questions
     #
     #    L5 / L7 :  group by canonical book; label = "BOOK.RANGE"
     #    GK      :  group by file (topic);   label = topic name
     #    Dedupe by Drive file_id so the same file appearing under two
     #    subtopic labels collapses to one entry. Skip empty chapters.
-    # ─────────────────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????????????????
     originals_by_chapter = {}
     for ch_key, book_name, file_subtopic, fid in source_rows:
         if level_key == "gk":
-            # GK's book is always "GATE" — meaningless. Group by topic.
+            # GK's book is always "GATE" -- meaningless. Group by topic.
             group = _stem(file_subtopic) or "General"
         else:
             group = canon_book(book_name)
@@ -321,19 +321,19 @@ for level_key, label in levels:
             DRIVE[level_key][ch_key][sub_label] = bucket
 
 
-# ════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------
 # emit
-# ════════════════════════════════════════════════════════════════════════
+# ------------------------------------------------------------------------
 
 def to_js(obj):
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
 CHAPTERDATA_BLOCK = r"""
-/* ══════════════════════════════════════════════════════════════════════
-   CHAPTERDATA — accessor API used by app.js / objective.js / admin.html.
+/* ----------------------------------------------------------------------
+   CHAPTERDATA -- accessor API used by app.js / objective.js / admin.html.
    Signatures unchanged from the previous version.
-   ══════════════════════════════════════════════════════════════════════ */
+   ---------------------------------------------------------------------- */
 (function(){
 'use strict';
 
@@ -366,7 +366,7 @@ function chapterFileRefs(lv, ch){
         subtopic: fileLabel,
         fid:      String(fid),
         key:      `${lv}_${ch}_${subLabel}_${fileLabel}`,
-        name:     `${chLabel} — ${subLabel} — ${fileLabel}`
+        name:     `${chLabel} -- ${subLabel} -- ${fileLabel}`
       });
     });
   });
@@ -417,22 +417,22 @@ if (typeof window !== 'undefined') {
 """
 
 js = (
-    "/* ══════════════════════════════════════════════════════════════════════\n"
-    "   CHAPTERS-DATA.JS — ABHYAS AUTO-GENERATED\n"
-    "   ──────────────────────────────────────────────────────────────────────\n"
+    "/* ----------------------------------------------------------------------\n"
+    "   CHAPTERS-DATA.JS -- ABHYAS AUTO-GENERATED\n"
+    "   ??????????????????????????????????????????????????????????????????????\n"
     "   Four-level shape:  level -> chapter -> subtopic -> file(s)\n"
     "\n"
     "   Every chapter ends with:\n"
-    "     • '<prefix>.<N+1> Mixed Questions'    — pooled unclassified, part N\n"
-    "     • '<prefix>.<N+2> Original Questions' — every unique source file\n"
+    "     ? '<prefix>.<N+1> Mixed Questions'    -- pooled unclassified, part N\n"
+    "     ? '<prefix>.<N+2> Original Questions' -- every unique source file\n"
     "\n"
     "   Classified subtopics use leaves 'All' or 'part N'.\n"
-    "   Mixed Questions uses 'part 1', 'part 2', …\n"
+    "   Mixed Questions uses 'part 1', 'part 2', ...\n"
     "   Original Questions:\n"
-    "     – L5 / L7 : '<Book>.<range>'         e.g. 'DPARSAD.1-100'\n"
-    "     – GK      : '<topic>'                e.g. 'constitution'\n"
+    "     -- L5 / L7 : '<Book>.<range>'         e.g. 'DPARSAD.1-100'\n"
+    "     -- GK      : '<topic>'                e.g. 'constitution'\n"
     "   Empty Mixed/Original buckets are omitted entirely.\n"
-    "   ══════════════════════════════════════════════════════════════════════ */\n"
+    "   ---------------------------------------------------------------------- */\n"
     "\nconst CH_NAMES = "     + to_js(CH_NAMES)     + ";\n"
     "\nconst LEVEL_LABELS = " + to_js(LEVEL_LABELS) + ";\n"
     "\nconst DRIVE = "        + to_js(DRIVE)        + ";\n"

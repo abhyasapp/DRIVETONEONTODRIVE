@@ -29,6 +29,7 @@ Usage:
     python export_any_level.py level5
     python export_any_level.py all --dry-run
     python export_any_level.py all --include-unanswered
+    python export_any_level.py all --public-qn
 """
 
 import argparse
@@ -65,12 +66,15 @@ def strip_leading_number(text):
 
 
 def build_question(new_number, q_text, options, correct_idx, explanation, images,
-                   qid=None):
+                   qid=None, public_qn=None):
     body = strip_leading_number(q_text)
     item = {
-        # Stable database id (questions.id). "q" is renumbered on every export,
-        # so reports/corrections must key on this, never on file position.
-        "id": qid,
+        # Identity of the question. With --public-qn this is the readable
+        # public qn id (LCCCSSSFQQQQ) when one is assigned, so old consumers
+        # keep working while `public_qn` is added alongside.
+        "id": public_qn or qid,
+        # Explicit public qn id; null until the assignment step has run.
+        "public_qn": public_qn,
         "q": f"{new_number}. {body}",
         "options": list(options or []),
         # unanswered stays null (never pretend option A is correct).
@@ -167,7 +171,8 @@ def fetch_rows(cur, level_id, include_unanswered):
     cur.execute(f"""
         SELECT
             c.chapter_key, c.chapter_name, s.code, s.title,
-            q.id, q.question_text, q.options, q.correct_index, q.explanation
+            q.id, q.question_text, q.options, q.correct_index, q.explanation,
+            q.stable_qn_id
         FROM questions q
         JOIN question_subtopics qs ON qs.question_id = q.id
         JOIN subtopics s           ON s.id           = qs.subtopic_id
@@ -207,11 +212,11 @@ def fetch_images_for(cur, qids):
 def group_rows(rows):
     grouped = {}
     for (ch_key, ch_name, code, title, qid, q_text, options,
-         correct_idx, explanation) in rows:
+         correct_idx, explanation, stable_qn_id) in rows:
         ch = grouped.setdefault(ch_key, {"chapter_name": ch_name, "subs": {}})
         ch["subs"].setdefault(code, {"title": title, "items": []})
         ch["subs"][code]["items"].append(
-            (qid, q_text, options, correct_idx, explanation)
+            (qid, q_text, options, correct_idx, explanation, stable_qn_id)
         )
     return grouped
 
@@ -219,7 +224,7 @@ def group_rows(rows):
 # ── export ───────────────────────────────────────────────────────────────
 
 def export_level(cur, level_key, include_unanswered, dry_run,
-                 stable_parts=False):
+                 stable_parts=False, public_qn=False):
     cur.execute("SELECT id, label FROM levels WHERE level_key = %s", (level_key,))
     row = cur.fetchone()
     if not row:
@@ -282,22 +287,27 @@ def export_level(cur, level_key, include_unanswered, dry_run,
                 for part_idx, chunk in enumerate(chunks, 1):
                     payload = [
                         build_question(i, q_text, options, correct_idx,
-                                       explain, images_by_qid.get(qid), qid=qid)
-                        for i, (qid, q_text, options, correct_idx, explain)
+                                       explain, images_by_qid.get(qid), qid=qid,
+                                       public_qn=stable_qn_id if public_qn else None)
+                        for i, (qid, q_text, options, correct_idx, explain,
+                               stable_qn_id)
                         in enumerate(chunk, 1)
                     ]
                     fname = build_filename(code, sub["title"],
                                            part_idx, n_parts)
                     json_path = os.path.join(sub_dir, fname)
                     atomic_write_json(json_path, payload)
-                    atomic_write_json(meta_path_for(json_path), {
+                    meta = {
                         "code": code,
                         "title": sub["title"],
                         "source_label": None,
                         "part_number": part_idx,
                         "n_parts": n_parts,
                         "question_count": len(payload),
-                    })
+                    }
+                    if public_qn:
+                        meta["qn_id_scheme"] = "LCCCSSSFQQQQ"
+                    atomic_write_json(meta_path_for(json_path), meta)
                     files_written += 1
                     q_written += len(payload)
 
@@ -321,6 +331,9 @@ def parse_args():
                    help="Assign each question to a part by a hash of its "
                         "DB id instead of filling 50-question parts in "
                         "order.")
+    p.add_argument("--public-qn", action="store_true",
+                   help="Emit the assigned readable public qn id "
+                        "(LCCCSSSFQQQQ) as the question 'id' where one exists.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -339,6 +352,8 @@ def main():
     print("Exporting to", os.path.abspath(OUTPUT_ROOT))
     if args.include_unanswered:
         print("Mode: include unanswered questions")
+    if args.public_qn:
+        print("Mode: emit public qn ids as question 'id'")
     if args.dry_run:
         print("Mode: DRY-RUN")
 
@@ -348,7 +363,8 @@ def main():
     for lv in levels:
         try:
             f, q = export_level(cur, lv, args.include_unanswered, args.dry_run,
-                                stable_parts=args.stable_parts)
+                                stable_parts=args.stable_parts,
+                                public_qn=args.public_qn)
             total_files += f
             total_q += q
         except Exception as e:
