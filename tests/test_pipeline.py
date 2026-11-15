@@ -19,6 +19,21 @@ class PipelineSafetyTests(unittest.TestCase):
         self.assertIn("sync", rp.RETRY_ONCE_STEPS)
         self.assertNotIn("corrections", rp.RETRY_ONCE_STEPS)
 
+    def test_public_qn_ids_are_assigned_before_export(self):
+        # The export can only carry public_qn when the id already exists.
+        names = [step[0] for step in rp.STEPS]
+        self.assertIn("qn_ids", names)
+        self.assertLess(names.index("qn_ids"), names.index("export"))
+        self.assertIn("qn_ids", rp.DB_STEPS)
+        # A collision must never block serving content: the step is not fatal.
+        self.assertNotIn("qn_ids", rp.FATAL_STEPS)
+
+    def test_gemini_step_retries_deferred_rows(self):
+        # 'deferred' marks a question the model could not place during an
+        # outage. Without this flag those rows were skipped on every later run.
+        step = {s[0]: s for s in rp.STEPS}["gemini"]
+        self.assertIn("--retry-deferred", step[3])
+
     def test_ci_summary_marks_failures(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "summary.md")

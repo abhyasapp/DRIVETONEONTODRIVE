@@ -16,7 +16,9 @@ bounded per run (`--backlog-limit`, default 100) and respects `--level`.
 .github/workflows/daily_pipeline.yml   CI schedule + manual run
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)
 sync/        sync_any_level, apply_corrections
-dedupe/      dedupe_exact (pipeline), dedupe_review (dry-run report)
+dedupe/      dedupe_exact (pipeline), near_candidates (fuzzy review queue),
+             content_identity, merge_questions, source_aliases
+             the old v4 CSV exporter lives in archive/dedupe_review.py
              scope: duplicates are grouped per CHAPTER (same identity_key
              inside one chapter), never across chapters/levels.
              policy: every copy that agrees with a sibling is merged, even
@@ -24,9 +26,20 @@ dedupe/      dedupe_exact (pipeline), dedupe_review (dry-run report)
              only copies with no agreeing sibling are kept.
              near-duplicates (fuzzy): tools/near_duplicates.sql
 classify/    classify_any_level (keywords), classify_with_gemini (LLM)
-export/      export_any_level, generate_chapters_data_all
+             keyword scoring lives in classify/keyword_match.py and is shared by
+             both, so they cannot drift apart: keywords are normalized exactly
+             like the question text ("young's modulus", "r.c.c" now match),
+             stopword-only keywords ("is", "it") are dropped, and a keyword
+             nested inside a matched phrase ("stress" in "principal stress")
+             scores once, by the specificity of the phrase that contains it.
+             The LLM step runs with --retry-deferred, so a question deferred
+             during an outage is retried instead of staying in mixedqn forever.
+export/      export_any_level, generate_chapters_data_all, assign_stable_qn_ids
              every exported question carries `id` = questions.id, so reports
-             and corrections stay stable even when parts are renumbered
+             and corrections stay stable even when parts are renumbered, and
+             `public_qn` = the readable stable id (LCCCSSSFQQQQ). The `qn_ids`
+             step fills that id before export; `--public-qn` additionally moves
+             it into `id` for a future client migration.
 upload/      upload_any_level, upload_chapters_data
              safety: the prune pass is skipped for a level whenever any
              local file cannot be mapped to a DB subtopic, so good Drive
@@ -37,7 +50,9 @@ config/      settings.py (Drive parent, paths) + keyword JSONs
 review/      dashboard.py + duplicate_reviews.py  (local admin reviewer)
              index.html + admin_functions.sql + identity.js  (hosted console)
 tools/       cleanup_drive, boost_keywords   (manual helpers)
-tests/       smoke.py                        (offline, runs in CI)
+tests/       smoke.py + unittest suites        (offline, run in CI)
+             node suites: identity parity, admin SQL, reported SQL
+             (need PGlite: npm install --no-save @electric-sql/pglite)
 archive/     one-off scripts, not used by the pipeline
 ```
 
@@ -80,6 +95,25 @@ Export splits each subtopic into parts of 50 questions in order and only the
 last part carries the remainder (137 questions -> 50 / 50 / 37).
 `--stable-parts` assigns each question to a part by a hash of its DB id
 instead, which keeps unchanged questions in the same file across runs.
+
+## Question identity
+
+Four keys, each with exactly one job. They are not interchangeable.
+
+| Key | Type | What it is | Used by |
+|---|---|---|---|
+| `questions.id` | bigint PK | Internal row id | `reported_questions.qid` (BIGINT), audit/snapshots (`dedup_deletions`, `review_deletions`), subtopic and image links, console edit/delete |
+| `questions.stable_qn_id` | text, unique | Readable public id `LCCCSSSFQQQQ` (level, chapter, subtopic, file, sequence) | Exported as `public_qn`; assigned by `qn_ids` after classification, reused when a correction rewrites a question |
+| `questions.identity_key` | text | sha256 of canonical question text + sorted canonical options, scoped to one chapter | Exact dedupe, and the merge guards in `review/admin_functions.sql` |
+| `questions.source_question_key` | text | `n:<printed question number>`, else `i:<content hash>` | Drive sync and corrections: finds the same source item after renumbering or edits (`source_identity` + `correction_source_aliases_v2` carry the pre-edit identity) |
+
+Because `reported_questions.qid` is a BIGINT and the app sends the exported
+`id` back, `id` stays the numeric internal id: a public id there would arrive as
+a string, fail the integer cast, and silently null out the report's question
+link. The public id therefore travels as its own field, `public_qn`.
+
+`--public-qn` on the exporter swaps `id` to the public string when a client is
+ready for that migration; until then it is opt-in only.
 
 ## Hosted admin console (`index.html`)
 

@@ -150,6 +150,9 @@ OPENROUTER_TIERS = [
 ]
 
 from config.settings import KEYWORD_FILE_FOR
+from classify.keyword_match import (
+    matched_keywords, normalize as normalize_text, prepare_keywords,
+)
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -911,28 +914,40 @@ def _tokenize(text):
 
 def keyword_fallback(question_text, options, keyword_hints,
                      valid_codes=None, min_hits=KEYWORD_MIN_HITS):
+    """Keyword-only guess, used when the model abstains.
+
+    Shares classify.keyword_match with the keyword classifier, which fixes
+    three ways this used to place questions wrongly: stopword overlap ("of",
+    "in", "the") counted as evidence, nested keywords double counted, and a
+    tie between two subtopics silently taking the first one. A tie now
+    abstains, exactly like the keyword classifier.
+    """
     if not keyword_hints:
         return None, 0.0
-    blob = (question_text or "") + " " + " ".join(str(o) for o in (options or []))
-    tokens = _tokenize(blob)
-    if not tokens:
-        return None, 0.0
+    blob = " ".join([question_text or ""]
+                    + [str(o) for o in (options or [])])
+    q_norm = normalize_text(blob)
 
     best_code = None
     best_score = 0
+    best_hits = []
+    tied = False
     for code, kws in keyword_hints.items():
         if valid_codes is not None and code not in valid_codes:
             continue
-        kw_tokens = set()
-        for k in kws:
-            kw_tokens |= _tokenize(str(k))
-        if not kw_tokens:
-            continue
-        score = len(tokens & kw_tokens)
+        score, hits = matched_keywords(q_norm, prepare_keywords(kws))
         if score > best_score:
-            best_code, best_score = code, score
+            best_code, best_score, best_hits = code, score, hits
+            tied = False
+        elif score and score == best_score:
+            tied = True
 
-    if best_code is None or best_score < min_hits:
+    if best_code is None or tied:
+        return None, 0.0
+    # The score is specificity weighted, so a lone generic word scores 1 and is
+    # rejected while a multi-word term ("simpson's rule") reaches the bar on
+    # its own.
+    if best_score < min_hits:
         return None, 0.0
     conf = min(0.6, 0.25 + 0.10 * best_score)
     return best_code, conf

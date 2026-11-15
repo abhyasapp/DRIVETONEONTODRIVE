@@ -111,3 +111,16 @@ venv*/
 
 # ─── Attachments copied in by the desktop app ───────────
 .cloud-attachments/
+
+# ─── Hardening (2026-11) ────────────────────────────────────────────────
+# The rules above catch oauth-credentials*.json and oauth-token.pickle but not
+# the hyphenated spellings other tools write by default.
+oauth-token.json
+oauth-client*.json
+client-secret*.json
+*service-account*.json
+.dev.vars
+
+# Desktop workspace markers (the folder carries its own .gitignore, but a
+# fresh clone should not depend on that).
+.freebuff/

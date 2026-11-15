@@ -66,15 +66,19 @@ def strip_leading_number(text):
 
 
 def build_question(new_number, q_text, options, correct_idx, explanation, images,
-                   qid=None, public_qn=None):
+                   qid=None, public_qn=None, stable_qn=None):
     body = strip_leading_number(q_text)
     item = {
         # Identity of the question. With --public-qn this is the readable
         # public qn id (LCCCSSSFQQQQ) when one is assigned, so old consumers
         # keep working while `public_qn` is added alongside.
         "id": public_qn or qid,
-        # Explicit public qn id; null until the assignment step has run.
-        "public_qn": public_qn,
+        # The readable public qn id, always carried when the assignment step
+        # has run. It is deliberately a separate field: `id` stays the internal
+        # numeric id unless --public-qn is passed, because the app sends that
+        # number back as reported_questions.qid (a BIGINT), and swapping it for
+        # a string would null out every incoming report.
+        "public_qn": stable_qn,
         "q": f"{new_number}. {body}",
         "options": list(options or []),
         # unanswered stays null (never pretend option A is correct).
@@ -288,7 +292,8 @@ def export_level(cur, level_key, include_unanswered, dry_run,
                     payload = [
                         build_question(i, q_text, options, correct_idx,
                                        explain, images_by_qid.get(qid), qid=qid,
-                                       public_qn=stable_qn_id if public_qn else None)
+                                       public_qn=stable_qn_id if public_qn else None,
+                                       stable_qn=stable_qn_id)
                         for i, (qid, q_text, options, correct_idx, explain,
                                stable_qn_id)
                         in enumerate(chunk, 1)

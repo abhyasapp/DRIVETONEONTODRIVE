@@ -138,9 +138,11 @@ def refresh_review_candidates(cur, conn):
                  text=r[3] or "", options=r[4] or []) for r in cur.fetchall()]
     candidates = find_candidate_pairs(rows)
     if candidates:
+        # Built once. Rebuilding it inside the loop was O(candidates x rows)
+        # - ~32M dict inserts on a full 13k-question pool, every run.
+        by_id = {row["id"]: row for row in rows}
         candidate_rows = []
         for chapter_id, q1_id, q2_id, stem_score, options_score in candidates:
-            by_id = {row["id"]: row for row in rows}
             candidate_rows.append((chapter_id, q1_id, q2_id, stem_score, options_score,
                                    by_id[q1_id]["identity_key"],by_id[q2_id]["identity_key"]))
         execute_values(cur, """

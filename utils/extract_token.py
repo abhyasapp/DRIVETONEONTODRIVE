@@ -16,21 +16,28 @@ import json
 import pickle
 import sys
 
-try:
-    with open("oauth-token.pickle", "rb") as f:
-        creds = pickle.load(f)
-except FileNotFoundError:
-    sys.exit("oauth-token.pickle not found. Run upload_any_level.py once "
-             "locally (interactive login) to create it.")
 
-if not creds.refresh_token:
-    sys.exit("This token has no refresh_token - delete oauth-token.pickle "
-             "and re-run the interactive login.")
+def main():
+    try:
+        with open("oauth-token.pickle", "rb") as f:
+            creds = pickle.load(f)
+    except FileNotFoundError:
+        sys.exit("oauth-token.pickle not found. Run upload_any_level.py once "
+                 "locally (interactive login) to create it.")
 
-print(json.dumps({
-    "refresh_token": creds.refresh_token,
-    "token_uri": creds.token_uri,
-    "client_id": creds.client_id,
-    "client_secret": creds.client_secret,
-    "scopes": list(creds.scopes or ["https://www.googleapis.com/auth/drive"]),
-}))
+    if not creds.refresh_token:
+        sys.exit("This token has no refresh_token - delete oauth-token.pickle "
+                 "and re-run the interactive login.")
+
+    print(json.dumps({
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": list(creds.scopes or ["https://www.googleapis.com/auth/drive"]),
+    }))
+
+
+# Importing this module must never print credentials; only the CLI does that.
+if __name__ == "__main__":
+    main()

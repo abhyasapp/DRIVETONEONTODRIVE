@@ -4,7 +4,7 @@ run_pipeline.py  (v6.5 - strict failure reporting, v9 dedupe)
 -------------------------------------------------------------------
 Daily pipeline: sync -> corrections -> dedupe -> classify -> export -> upload -> chapters
 
-Steps (11):
+Steps (12):
    1. sync         sync_any_level.py all
    2. corrections  apply_corrections.py --apply --retry-backlog
    3. dedupe       dedupe_exact.py --apply --quiet
@@ -12,10 +12,11 @@ Steps (11):
    5. kw_l7        classify_any_level.py level7    |  parallel
    6. kw_gk        classify_any_level.py gk       /
    7. gemini       classify_with_gemini.py all
-   8. export       export_any_level.py all
-   9. upload       upload_any_level.py all --workers 6
-  10. chapters     generate_chapters_data_all.py
-  11. chapters_up  upload_chapters_data.py
+   8. qn_ids       assign_stable_qn_ids.py
+   9. export       export_any_level.py all
+  10. upload       upload_any_level.py all --workers 6
+  11. chapters     generate_chapters_data_all.py
+  12. chapters_up  upload_chapters_data.py
 
 Behaviour:
   * Exit code is NON-ZERO if pre-flight fails or a FATAL_STEPS member
@@ -119,8 +120,17 @@ STEPS = [
      "classify.classify_any_level", ["level7"],                  600),
     ("kw_gk",       "Keyword classify gk",
      "classify.classify_any_level", ["gk"],                      600),
+    # --retry-deferred lets a question the model could not place during an
+    # outage be retried on a later run; without it the 'deferred' rows were
+    # skipped forever and stayed in mixedqn permanently.
     ("gemini",      "Gemini classify",
-     "classify.classify_with_gemini", ["all"],       GEMINI_TIMEOUT),
+     "classify.classify_with_gemini", ["all", "--retry-deferred"],
+                                                       GEMINI_TIMEOUT),
+    # Runs after classification/dedupe (it keys off the export layout) and
+    # before export. Without it in the pipeline, a question synced since the
+    # last manual run had no public id, so the export carried public_qn: null.
+    ("qn_ids",      "Assign stable public qn ids",
+     "export.assign_stable_qn_ids", [],                        600),
     ("export",      "Export to JSON (stable parts)",
      "export.export_any_level", ["all"],                       900),
     ("upload",      "Upload JSON to Drive",
@@ -163,7 +173,7 @@ ALL_STEP_NAMES = [s[0] for s in STEPS]
 
 # Which steps need which kind of credentials.
 DB_STEPS = {"sync", "corrections", "dedupe", "kw_l5", "kw_l7", "kw_gk",
-            "gemini", "export", "chapters", "chapters_up"}
+            "gemini", "qn_ids", "export", "chapters", "chapters_up"}
 DRIVE_STEPS = {"sync", "upload", "chapters_up"}
 
 # Lines we still print in --quiet mode (headers + totals).
@@ -454,12 +464,14 @@ def mixedqn_count():
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"), connect_timeout=10)
         cur = conn.cursor()
+        # Deferred rows are included on purpose: the gemini step runs with
+        # --retry-deferred, so a backlog of only-deferred rows still needs the
+        # step to run. Counting them out skipped exactly the rows worth retrying.
         cur.execute("""
             SELECT COUNT(DISTINCT qs.question_id)
             FROM question_subtopics qs
             JOIN subtopics s ON s.id = qs.subtopic_id
             WHERE s.code = 'mixedqn'
-              AND qs.classified_by IS DISTINCT FROM 'deferred'
         """)
         n = cur.fetchone()[0]
         cur.close()

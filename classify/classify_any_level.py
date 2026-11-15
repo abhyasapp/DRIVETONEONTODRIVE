@@ -19,7 +19,6 @@ Usage:
   python classify_any_level.py level7
 """
 
-import re
 import sys
 import json
 import time
@@ -34,27 +33,16 @@ load_dotenv()
 from config.settings import KEYWORD_FILE_FOR
 
 # ---------- text helpers ----------
-_NORM_KEEP = re.compile(r"[^a-z0-9\s\-/]")
-_WS        = re.compile(r"\s+")
-
-
-def normalize(text):
-    text = (text or "").lower()
-    text = _NORM_KEEP.sub(" ", text)
-    text = _WS.sub(" ", text).strip()
-    return " " + text + " "
+# The matching rules live in classify.keyword_match so this classifier and the
+# Gemini keyword fallback cannot drift apart.
+from classify.keyword_match import (  # noqa: E402
+    matched_keywords, normalize, prepare_keywords,
+)
 
 
 def find_matches(q_norm, keywords):
-    hits = []
-    for kw in keywords:
-        if not kw:
-            continue
-        if (" " + kw + " ") in q_norm:
-            hits.append(kw)
-        elif q_norm.startswith(kw + " ") or q_norm.endswith(" " + kw):
-            hits.append(kw)
-    return hits
+    """Keyword spellings that matched (kept for callers needing only hits)."""
+    return matched_keywords(q_norm, keywords)[1]
 
 
 # ---------- core classify-one (runs in worker threads) ----------
@@ -70,8 +58,9 @@ def classify_one(qid, ch_key, qtext, subs_by_chapter, kw_by_chapter,
     second_score = 0
 
     for sub_id, code in subs:
-        hits = find_matches(q_norm, kw_map.get(code, ()))
-        score = len(hits)
+        # Specificity-weighted evidence: a nested keyword adds nothing to the
+        # phrase that already covers it (see classify/keyword_match.py).
+        score, hits = matched_keywords(q_norm, kw_map.get(code, ()))
         if score > best_score:
             second_score = best_score
             best_score = score
@@ -108,9 +97,9 @@ def main():
         KEYWORDS[ch_key] = {}
         for full_key, words in subs.items():
             code = full_key.split()[0]
-            KEYWORDS[ch_key][code] = tuple(
-                w.lower().strip() for w in words if w.strip()
-            )
+            # Normalized like the question text, with stopword-only keywords
+            # dropped (see classify/keyword_match.py).
+            KEYWORDS[ch_key][code] = prepare_keywords(words)
 
     start = time.time()
     conn = db_connect()

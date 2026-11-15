@@ -81,9 +81,59 @@
     .option-row input[type=text]{flex:1 1 auto}
     .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
     @media(max-width:760px){.wrap{padding:18px 13px 50px}.panel{padding:15px}.hero{padding:22px 0 16px}}
+
+    /* ---- polish: keyboard, focus, motion, small screens ---- */
+    /* .button and nav.tabs set display, which used to beat the hidden
+       attribute: the tab bar and Disconnect stayed on screen while the console
+       was not connected. This makes hidden mean hidden everywhere. */
+    [hidden]{display:none!important}
+    .skip-link{position:absolute;left:-9999px;top:0;z-index:60;background:#2d68cc;color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:700;text-decoration:none}
+    .skip-link:focus{left:0}
+    :where(a,button,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+    .button:active:not(:disabled){transform:translateY(1px)}
+    .button,.card,.run{transition:border-color .16s ease,background .16s ease,transform .12s ease}
+    .card:hover{border-color:#33507a}
+    .card .v{font-variant-numeric:tabular-nums}
+    nav.tabs{position:sticky;top:0;z-index:6;padding:8px 0 10px;background:linear-gradient(180deg,var(--bg) 72%,transparent);backdrop-filter:blur(6px)}
+    nav.tabs button{min-height:38px}
+    .run:hover{background:#0f1a2b}
+    /* A loading row gets a small spinner instead of a bare word. */
+    .empty.loading{display:flex;align-items:center;gap:9px}
+    .empty.loading::before{content:"";width:13px;height:13px;border-radius:50%;border:2px solid #3a5478;border-top-color:var(--blue);animation:spin .8s linear infinite;flex:0 0 auto}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    /* The duplicate table is wider than a phone: let it scroll, not overflow. */
+    #dupTable{overflow-x:auto}
+    #dupTable table{min-width:560px}
+    .opt{overflow-wrap:anywhere}
+    .stem,.exp{overflow-wrap:anywhere}
+
+    /* ---- reported questions ---- */
+    .filterbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:14px 0 16px}
+    .filterbar .grow{flex:1 1 240px}
+    .filterbar select{width:auto;min-width:128px}
+    .rep{background:#0f1a2b;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+    .rep:hover{border-color:#33507a}
+    .rep .rep-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:12px}
+    .rep-stem{margin:8px 0 6px;overflow-wrap:anywhere}
+    .rep-stem.trunc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .rep-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .rep-detail{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+    .rep-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px}
+    .rep-kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:0;font-size:13px}
+    .rep-kv dt{color:var(--muted)}
+    .rep-kv dd{margin:0;overflow-wrap:anywhere}
+    .opt.chosen{border-color:#7a6a2a;background:#2e2712}
+    .opt .tag{float:right;margin-left:10px;font-size:11px;color:var(--muted)}
+    .opt .tag.right{color:var(--green)}.opt .tag.wrong{color:var(--yellow)}
+    .button.tiny{padding:5px 11px;font-size:13px;border-radius:8px}
+    @media(max-width:760px){.rep-grid{grid-template-columns:1fr}}
+    dialog[open]{animation:pop .14s ease-out}
+    @keyframes pop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}}
   </style>
 </head>
 <body>
+<a class="skip-link" href="#content">Skip to content</a>
 <div class="wrap">
   <header class="top">
     <div class="brand"><span>ABHYAS</span> / DATA CONSOLE</div>
@@ -130,13 +180,13 @@
     <button data-tab="reported">Reported</button>
   </nav>
 
-  <main>
+  <main id="content" tabindex="-1">
     <section class="panel" id="tab-overview" hidden>
       <div class="panel-head">
         <div><h2>Database overview</h2><div class="muted">Live counts from the connected database</div></div>
         <button class="button ghost" id="overviewRefresh">Refresh</button>
       </div>
-      <div class="cards" id="overviewCards"><div class="empty">Loading…</div></div>
+      <div class="cards" id="overviewCards"><div class="empty loading">Loading…</div></div>
       <h3>Where questions come from</h3>
       <div id="overviewLevels" class="muted">Loading…</div>
       <h3>Classification sources</h3>
@@ -167,7 +217,7 @@
           <button class="button ghost" id="dupNext">Next ›</button>
         </div>
       </div>
-      <div id="dupTable"><div class="empty">Loading…</div></div>
+      <div id="dupTable"><div class="empty loading">Loading…</div></div>
       <div id="dupDetail"></div>
     </section>
 
@@ -201,7 +251,7 @@
       </div>
       <div id="reviewScope" class="status"></div>
       <div id="reviewBulk" class="status"></div>
-      <div id="reviewList"><div class="empty">Loading…</div></div>
+      <div id="reviewList"><div class="empty loading">Loading…</div></div>
     </section>
 
     <section class="panel" id="tab-questions" hidden>
@@ -223,23 +273,48 @@
           <option value="corrected">Human-corrected</option>
         </select>
       </div>
-      <div id="qList"><div class="empty">Loading…</div></div>
+      <div id="qList"><div class="empty loading">Loading…</div></div>
     </section>
     <section class="panel" id="tab-reported" hidden>
       <div class="panel-head">
-        <div><h2>Reported questions</h2><div class="muted">Questions flagged by users, migrated from Supabase/GAS into Neon. Edit to correct; resolve when done.</div></div>
+        <div>
+          <h2>Reported questions</h2>
+          <div class="muted">Questions flagged by users in the app. Compare the snapshot with the live row, fix the question, then resolve the report.</div>
+        </div>
         <div class="row">
-          <select id="rStatus" class="select">
-            <option value="">all</option>
-            <option value="open">open</option>
-            <option value="resolved">resolved</option>
-          </select>
-          <button class="button ghost" id="rPrev">‹ Prev</button>
-          <span class="status" id="rPos"></span>
-          <button class="button ghost" id="rNext">next ›</button>
+          <span class="status" id="rSummary" aria-live="polite"></span>
+          <button class="button ghost" id="rRefresh">Refresh</button>
         </div>
       </div>
-      <div id="rList"><div class="empty">Loading…</div></div>
+      <div class="cards" id="rCards"><div class="empty loading">Loading…</div></div>
+      <div class="filterbar">
+        <input class="grow" id="rSearch" type="text" placeholder="Search question text, note, user or report id" aria-label="Search reports">
+        <select id="rStatus" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          <option value="open">Open</option>
+          <option value="resolved">Resolved</option>
+        </select>
+        <select id="rReason" aria-label="Filter by reason"><option value="">All reasons</option></select>
+        <select id="rSection" aria-label="Filter by app section"><option value="">All sections</option></select>
+        <select id="rLink" aria-label="Filter by question link">
+          <option value="">All reports</option>
+          <option value="linked">Linked to a question</option>
+          <option value="unlinked">Unlinked (no qid)</option>
+        </select>
+        <select id="rSort" aria-label="Sort order">
+          <option value="new">Newest first</option>
+          <option value="old">Oldest first</option>
+        </select>
+        <button class="button ghost" id="rClear">Clear filters</button>
+      </div>
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <span class="status" id="rPos">0</span>
+        <div class="row">
+          <button class="button ghost" id="rPrev">‹ Prev</button>
+          <button class="button ghost" id="rNext">Next ›</button>
+        </div>
+      </div>
+      <div id="rList"><div class="empty">Not loaded yet.</div></div>
     </section>
   </main>
 
@@ -248,7 +323,7 @@
       <div><h2>Pipeline history</h2><div class="muted">Recent runs of the public daily workflow</div></div>
       <span class="badge" id="runsState"><span class="dot"></span>Loading</span>
     </div>
-    <div id="runs"><div class="empty">Fetching recent runs…</div></div>
+    <div id="runs"><div class="empty loading">Fetching recent runs…</div></div>
     <a class="muted" href="https://github.com/abhyasapp/DRIVETONEONTODRIVE/actions/workflows/daily_pipeline.yml" target="_blank" rel="noopener">All runs, downloadable logs and artifacts ↗</a>
   </section>
 
@@ -419,7 +494,10 @@
     $('#installBtn').disabled = !connected;
     $$('#tabs button').forEach(button => {
       button.disabled = !connected;
-      button.classList.toggle('on', connected && button.dataset.tab === state.tab);
+      const on = connected && button.dataset.tab === state.tab;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-selected', String(on));
+      button.setAttribute('tabindex', on ? '0' : '-1');
     });
     $$('main > section').forEach(section => {
       section.hidden = !connected || section.id !== `tab-${state.tab}`;
@@ -445,7 +523,10 @@
       sessionStorage.setItem('abhyas.dsn', dsn);
       setConnected(true);
       status(target, `Connected · ${fmt(probe.questions)} live questions${state.helpers ? '' : ' · helpers not installed yet'}`, 'good');
-      await loadOverview();
+      // Reopen the section the reviewer was last on instead of always jumping
+      // back to Overview after a reconnect.
+      if (state.tab === 'overview') await loadOverview();
+      else await switchTab(state.tab, false);
       return true;
     } catch (error) {
       state.endpoint = '';
@@ -494,7 +575,7 @@
 
   async function loadOverview() {
     const target = $('#overviewCards');
-    target.innerHTML = '<div class="empty">Loading…</div>';
+    target.innerHTML = '<div class="empty loading">Loading…</div>';
     try {
       const questions = await sqlOne(`
         SELECT count(*)::int AS questions,
@@ -590,6 +671,13 @@
         : 'No merges recorded yet.';
     } catch (error) {
       target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+      // Without this the sub-sections below kept saying "Loading…" forever,
+      // which reads as "still working" when the request has already failed.
+      ['#overviewLevels', '#overviewClassified', '#overviewDeletions'].forEach(selector => {
+        const element = $(selector);
+        if (element) element.textContent = 'Not loaded.';
+      });
+      $('#overviewNote').innerHTML = '';
     }
   }
   $('#overviewRefresh').onclick = loadOverview;
@@ -668,14 +756,27 @@
       button.onclick = () => switchTab(button.dataset.view);
     });
   }
-  $('#verifyBtn').onclick = runVerify;
+  // A double click used to fire the whole check list twice, doubling every
+  // query; the button now locks until the run finishes.
+  $('#verifyBtn').onclick = async () => {
+    const button = $('#verifyBtn');
+    if (button.disabled) return;
+    button.disabled = true;
+    $('#verifyList').setAttribute('aria-busy', 'true');
+    try {
+      await runVerify();
+    } finally {
+      button.disabled = false;
+      $('#verifyList').removeAttribute('aria-busy');
+    }
+  };
 
   /* ---------------------------------------------------------------- exact duplicates */
 
   async function loadDupes(offset) {
     state.dupOffset = Math.max(0, offset);
     const target = $('#dupTable');
-    target.innerHTML = '<div class="empty">Loading…</div>';
+    target.innerHTML = '<div class="empty loading">Loading…</div>';
     $('#dupDetail').innerHTML = '';
     try {
       const total = num((await sqlOne(`SELECT count(*)::int AS n FROM (
@@ -751,7 +852,7 @@
 
   async function showGroup(identityKey, chapterId) {
     const target = $('#dupDetail');
-    target.innerHTML = '<div class="empty">Loading copies…</div>';
+    target.innerHTML = '<div class="empty loading">Loading copies…</div>';
     try {
       const rows = await sql(`
         SELECT q.id, q.question_number, q.question_text, q.options, q.correct_index,
@@ -867,7 +968,7 @@
   async function loadReview(offset) {
     state.reviewOffset = Math.max(0, offset);
     const target = $('#reviewList');
-    target.innerHTML = '<div class="empty">Loading…</div>';
+    target.innerHTML = '<div class="empty loading">Loading…</div>';
     $('#bulkMerge').disabled = !state.helpers;
     try {
       await loadReviewChapters();
@@ -1272,7 +1373,7 @@
   async function loadQuestions(offset) {
     state.qOffset = Math.max(0, offset);
     const target = $('#qList');
-    target.innerHTML = '<div class="empty">Loading…</div>';
+    target.innerHTML = '<div class="empty loading">Loading…</div>';
     try {
       const filter = buildQuestionFilter();
       const totalRow = await sqlOne(`SELECT count(*)::int AS n ${filter.joins} WHERE ${filter.where}`, filter.params);
@@ -1480,77 +1581,363 @@
 
   /* ---------------------------------------------------------------- reported */
 
+  const REPORT_PAGE = 25;
   let rOff = 0;
-  async function loadReported(off) {
-    if (off != null) rOff = off;
-    const target = $('#rList');
-    target.innerHTML = '<div class="empty">Loading…</div>';
+  let rToken = 0;
+  let rFacetsLoaded = false;
+  const rFilter = { q: '', status: '', reason: '', section: '', link: '', sort: 'new' };
+  const rExpanded = new Set();
+
+  const rDate = value => {
+    if (!value) return '\u2014';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+  };
+
+  function rOptions(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    }
+    return [];
+  }
+
+  function rWhere() {
+    const clauses = [];
+    const params = [];
+    const bind = (sql, value) => {
+      params.push(value);
+      clauses.push(sql.replace('?', `$${params.length}`));
+    };
+    if (rFilter.status) bind('rq.status = ?', rFilter.status);
+    if (rFilter.reason === '-') clauses.push("coalesce(rq.reason, '') = ''");
+    else if (rFilter.reason) bind('rq.reason = ?', rFilter.reason);
+    if (rFilter.section === '-') clauses.push("coalesce(rq.section, '') = ''");
+    else if (rFilter.section) bind('rq.section = ?', rFilter.section);
+    if (rFilter.link === 'linked') clauses.push('rq.qid IS NOT NULL');
+    if (rFilter.link === 'unlinked') clauses.push('rq.qid IS NULL');
+    if (rFilter.q) {
+      params.push(`%${rFilter.q}%`);
+      const p = `$${params.length}`;
+      clauses.push(`(rq.question_snapshot ILIKE ${p} OR coalesce(rq.note, '') ILIKE ${p}`
+        + ` OR rq.uid ILIKE ${p} OR rq.id ILIKE ${p})`);
+    }
+    return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+  }
+
+  async function loadReportedSummary() {
+    const target = $('#rCards');
     try {
-      const st = $('#rStatus').value;
-      const where = st ? 'WHERE rq.status = $1' : '';
-      const params = st ? [st] : [];
-      const totalRow = await sqlOne(`SELECT count(*)::int AS n FROM reported_questions rq ${where}`, params);
-      const total = num(totalRow.n);
+      const row = await sqlOne(`
+        SELECT count(*)::int AS total,
+               count(*) FILTER (WHERE status = 'resolved')::int AS resolved,
+               count(*) FILTER (WHERE status IS DISTINCT FROM 'resolved')::int AS open,
+               count(*) FILTER (WHERE qid IS NULL)::int AS unlinked,
+               count(*) FILTER (WHERE corrected)::int AS corrected,
+               count(DISTINCT uid)::int AS reporters,
+               count(*) FILTER (WHERE reported_at >= now() - interval '7 days')::int AS week
+        FROM reported_questions`);
+      const open = num(row.open);
+      const unlinked = num(row.unlinked);
+      target.innerHTML = [
+        card('Total reports', fmt(num(row.total))),
+        card('Open', fmt(open), open ? 'alert' : 'good'),
+        card('Resolved', fmt(num(row.resolved)), 'good'),
+        card('No question link', fmt(unlinked), unlinked ? 'bad' : 'good'),
+        card('Answer fixed after report', fmt(num(row.corrected))),
+        card('Distinct reporters', fmt(num(row.reporters))),
+        card('Reported in last 7 days', fmt(num(row.week)))
+      ].join('');
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
+  }
+
+  async function loadReportedFacets() {
+    if (rFacetsLoaded) return;
+    try {
+      const [reasons, sections] = await Promise.all([
+        sql(`SELECT coalesce(reason, '') AS value, count(*)::int AS n
+             FROM reported_questions GROUP BY 1 ORDER BY n DESC`),
+        sql(`SELECT coalesce(section, '') AS value, count(*)::int AS n
+             FROM reported_questions GROUP BY 1 ORDER BY 1`)
+      ]);
+      const fill = (select, rows, noneLabel) => {
+        rows.forEach(row => {
+          const raw = row.value || '';
+          const option = document.createElement('option');
+          option.value = raw || '-';
+          option.textContent = `${raw || noneLabel} (${fmt(num(row.n))})`;
+          select.appendChild(option);
+        });
+      };
+      fill($('#rReason'), reasons, 'no reason given');
+      fill($('#rSection'), sections, 'no section');
+      rFacetsLoaded = true;
+    } catch { /* filters simply stay at their defaults; the list still loads */ }
+  }
+
+  function renderReport(r) {
+    const live = r.live_id != null;
+    const isOpen = (r.status || 'open') !== 'resolved';
+    const options = rOptions(live ? r.options : r.options_snapshot);
+    const correct = r.q_correct_index != null ? num(r.q_correct_index)
+      : (r.correct_index != null ? num(r.correct_index) : null);
+    const chosen = r.chosen_index != null ? num(r.chosen_index) : null;
+    const mismatch = chosen != null && correct != null && chosen !== correct;
+    const id = String(r.report_id);
+    const expanded = rExpanded.has(id);
+    const stem = r.question_text || r.question_snapshot || '(question text missing)';
+    const chips = [
+      `<span class="chip ${isOpen ? 'warn' : 'ok'}">${esc(r.status || 'open')}</span>`,
+      r.reason ? `<span class="chip">${esc(r.reason)}</span>` : '',
+      !r.qid ? '<span class="chip bad">no question link</span>'
+        : (!live ? '<span class="chip bad">question deleted</span>' : ''),
+      r.corrected ? '<span class="chip ok">answer fixed</span>' : '',
+      mismatch ? '<span class="chip warn">user answer disagrees</span>' : ''
+    ].join('');
+    const answer = correct != null
+      ? `correct is [${correct}]${chosen != null && chosen !== correct ? `, user chose [${chosen}]` : ''}`
+      : (chosen != null ? `user chose [${chosen}], no answer stored` : 'no answer recorded');
+    const optionRows = options.length ? options.map((option, index) => {
+      const right = correct != null && index === correct;
+      const picked = chosen != null && index === chosen;
+      const tags = (right ? '<span class="tag right">correct</span>' : '')
+        + (picked ? `<span class="tag ${right ? 'right' : 'wrong'}">user chose</span>` : '');
+      return `<div class="opt${right ? ' right' : picked ? ' chosen' : ''}">[${index}] ${esc(option)}${tags}</div>`;
+    }).join('') : '<div class="empty">No options stored with this report.</div>';
+    return `<article class="rep" data-report="${esc(id)}">
+      <div class="rep-head">${chips}</div>
+      <div class="rep-stem${expanded ? '' : ' trunc'}">${esc(stem)}</div>
+      <div class="rep-head">
+        <span>report #${esc(id)}</span>
+        <span>· ${r.qid ? `question ${esc(r.qid)}` : 'unlinked'}</span>
+        <span>· ${esc(rDate(r.reported_at))}</span>
+        <span>· ${esc(r.uid || 'unknown user')}</span>
+        ${r.app_version ? `<span>· app ${esc(r.app_version)}</span>` : ''}
+      </div>
+      <div class="rep-actions">
+        <button class="button ghost tiny" data-toggle="${esc(id)}" aria-expanded="${expanded}" aria-controls="rDetail-${esc(id)}">${expanded ? 'Hide details' : 'Details'}</button>
+        ${live ? `<button class="button ghost tiny" data-edit="${esc(r.qid)}">Edit question</button>` : ''}
+        ${isOpen ? `<button class="button tiny" data-resolve="${esc(id)}">Resolve</button>`
+                 : `<button class="button ghost tiny" data-reopen="${esc(id)}">Reopen</button>`}
+      </div>
+      <div class="rep-detail" id="rDetail-${esc(id)}"${expanded ? '' : ' hidden'}>
+        <div class="rep-grid">
+          <div>
+            <div class="muted">Options · ${esc(answer)}</div>
+            ${optionRows}
+            ${r.note ? `<div class="exp">note: ${esc(r.note)}</div>` : ''}
+          </div>
+          <div>
+            <dl class="rep-kv">
+              <dt>Status</dt><dd>${esc(r.status || 'open')}${r.corrected ? ' · answer fixed' : ''}</dd>
+              <dt>Reported</dt><dd>${esc(rDate(r.reported_at))} by ${esc(r.reported_by || 'app')}</dd>
+              <dt>User</dt><dd>${esc(r.uid || '—')}</dd>
+              <dt>Question</dt><dd>${r.qid ? `${esc(r.qid)}${live ? '' : ' · deleted'}` : 'not linked to a question row'}</dd>
+              <dt>Section</dt><dd>${esc(r.section || '—')}${r.app_version ? ` · app ${esc(r.app_version)}` : ''}</dd>
+              ${r.file_id ? `<dt>File id</dt><dd>${esc(r.file_id)}</dd>` : ''}
+              ${r.resolved_at ? `<dt>Resolved</dt><dd>${esc(rDate(r.resolved_at))} by ${esc(r.resolved_by || '—')}</dd>` : ''}
+            </dl>
+            ${live
+              ? `<div class="muted" style="margin-top:10px">Live text${r.q_corrected_at ? ` · corrected ${esc(rDate(r.q_corrected_at))}` : ''}</div>
+                 <div class="stem">${esc(r.question_text || '')}</div>`
+              : '<div class="callout">The question this report points at no longer exists. Use the snapshot when correcting the source file.</div>'}
+          </div>
+        </div>
+      </div>
+    </article>`;
+  }
+
+  function wireReportActions() {
+    $$('#rList [data-toggle]').forEach(button => {
+      button.onclick = () => {
+        const id = button.dataset.toggle;
+        const detail = document.getElementById(`rDetail-${id}`);
+        const open = button.getAttribute('aria-expanded') === 'true';
+        if (open) rExpanded.delete(id); else rExpanded.add(id);
+        button.setAttribute('aria-expanded', String(!open));
+        button.textContent = open ? 'Details' : 'Hide details';
+        if (detail) detail.hidden = open;
+        const stem = button.closest('.rep')?.querySelector('.rep-stem');
+        if (stem) stem.classList.toggle('trunc', open);
+      };
+    });
+    $$('#rList [data-resolve]').forEach(button => {
+      button.onclick = () => rSetStatus(button.dataset.resolve, 'resolved', button);
+    });
+    $$('#rList [data-reopen]').forEach(button => {
+      button.onclick = () => rSetStatus(button.dataset.reopen, 'open', button);
+    });
+    $$('#rList [data-edit]').forEach(button => {
+      button.onclick = () => openEditor(num(button.dataset.edit), () => loadReported());
+    });
+  }
+
+  async function rSetStatus(id, next, button) {
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    try {
+      if (next === 'resolved') {
+        await sqlOne(`UPDATE reported_questions
+                      SET status = $1, resolved_at = now(), resolved_by = $2
+                      WHERE id = $3 RETURNING id`, ['resolved', 'console', id]);
+      } else {
+        await sqlOne(`UPDATE reported_questions
+                      SET status = $1, resolved_at = NULL, resolved_by = NULL
+                      WHERE id = $2 RETURNING id`, ['open', id]);
+      }
+      await loadReported(rOff);
+      await loadReportedSummary();
+    } catch (error) {
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+      alert(error.message);
+    }
+  }
+
+  async function loadReported(off) {
+    if (off != null) rOff = Math.max(0, off);
+    const token = ++rToken;
+    const target = $('#rList');
+    target.innerHTML = '<div class="empty loading">Loading reports…</div>';
+    try {
+      loadReportedSummary();
+      await loadReportedFacets();
+      if (token !== rToken) return;
+      const filter = rWhere();
+      const direction = rFilter.sort === 'old' ? 'ASC' : 'DESC';
+      const countRow = await sqlOne(
+        `SELECT count(*)::int AS n FROM reported_questions rq ${filter.where}`, filter.params);
+      const total = num(countRow.n);
       const rows = await sql(`
         SELECT rq.id AS report_id, rq.uid, rq.qid, rq.file_id, rq.question_snapshot,
                rq.options_snapshot, rq.correct_index, rq.chosen_index, rq.reason,
                rq.note, rq.reported_by, rq.reported_at, rq.status, rq.resolved_at,
                rq.resolved_by, rq.corrected, rq.section, rq.app_version,
-               q.question_text, q.options, q.correct_index AS q_correct_index,
-               q.corrected_at AS q_corrected_at
+               q.id AS live_id, q.question_text, q.options,
+               q.correct_index AS q_correct_index, q.corrected_at AS q_corrected_at
         FROM reported_questions rq
         LEFT JOIN questions q ON q.id = rq.qid
-        ${where}
-        ORDER BY rq.reported_at DESC NULLS LAST
-        LIMIT 50 OFFSET $${params.length + 1}`,
-        [...params, rOff]);
-      $('#rPos').textContent = total ? `${rOff + 1}–${Math.min(rOff + 50, total)} of ${fmt(total)}` : '0';
+        ${filter.where}
+        ORDER BY rq.reported_at ${direction} NULLS LAST, rq.id ${direction}
+        LIMIT ${REPORT_PAGE} OFFSET $${filter.params.length + 1}`,
+        [...filter.params, rOff]);
+      if (token !== rToken) return;
+
+      $('#rSummary').textContent = total
+        ? `${fmt(total)} report${total === 1 ? '' : 's'} match the filters`
+        : 'No reports match the filters';
+      $('#rPos').textContent = total
+        ? `${rOff + 1}–${Math.min(rOff + REPORT_PAGE, total)} of ${fmt(total)}` : '0';
       $('#rPrev').disabled = rOff <= 0;
-      $('#rNext').disabled = rOff + 50 >= total;
-      target.innerHTML = rows.length ? rows.map(r => `
-        <div class="copy">
-          <div class="hdr">
-            <span>report #${esc(r.report_id)}</span>
-            <span>qid ${esc(r.qid ?? '—')}</span>
-            <span>${esc(r.reason || '')}</span>
-            <span>${esc(r.status || '')}</span>
-            <span>${esc(r.section || '')}</span>
-            ${r.qid ? `<button class="pg" data-edit="${r.qid}">edit question</button>` : ''}
-            ${r.status !== 'resolved' ? `<button class="pg" data-resolve="${esc(r.report_id)}">resolve</button>` : ''}
-          </div>
-          <div class="stem">${esc(r.question_text || r.question_snapshot || '')}</div>
-          ${(Array.isArray(r.options) ? r.options : (Array.isArray(r.options_snapshot) ? r.options_snapshot : [])).map((o, i) => `<div class="opt ${i === r.q_correct_index ? 'right' : ''}">[${i}] ${esc(o)}</div>`).join('')}
-          ${r.note ? `<div class="exp">note: ${esc(r.note)}</div>` : ''}
-        </div>
-      `).join('') : '<div class="empty">No reported questions.</div>';
-      $$('#rList [data-edit]').forEach(b => b.onclick = () => openEditor(num(b.dataset.edit), () => loadReported()));
-      $$('#rList [data-resolve]').forEach(b => b.onclick = async () => {
-        try {
-          await sqlOne('UPDATE reported_questions SET status=$1, resolved_at=now(), resolved_by=$2 WHERE id=$3 RETURNING id', ['resolved', 'console', b.dataset.resolve]);
-          loadReported();
-        } catch (error) { alert(error.message); }
-      });
+      $('#rNext').disabled = rOff + REPORT_PAGE >= total;
+
+      if (!rows.length) {
+        target.innerHTML = total
+          ? '<div class="empty">Nothing on this page.</div>'
+          : '<div class="empty">No reported questions match. Try clearing the filters.</div>';
+        return;
+      }
+      target.innerHTML = rows.map(renderReport).join('');
+      wireReportActions();
     } catch (error) {
-      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+      if (token === rToken) target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
     }
   }
-  $('#rStatus').onchange = () => loadReported(0);
-  $('#rPrev').onclick = () => loadReported(Math.max(0, rOff - 50));
-  $('#rNext').onclick = () => loadReported(rOff + 50);
+
+  $('#rStatus').onchange = event => { rFilter.status = event.target.value; loadReported(0); };
+  $('#rReason').onchange = event => { rFilter.reason = event.target.value; loadReported(0); };
+  $('#rSection').onchange = event => { rFilter.section = event.target.value; loadReported(0); };
+  $('#rLink').onchange = event => { rFilter.link = event.target.value; loadReported(0); };
+  $('#rSort').onchange = event => { rFilter.sort = event.target.value; loadReported(0); };
+  let rSearchTimer = null;
+  $('#rSearch').oninput = event => {
+    rFilter.q = event.target.value.trim();
+    clearTimeout(rSearchTimer);
+    rSearchTimer = setTimeout(() => loadReported(0), 300);
+  };
+  $('#rClear').onclick = () => {
+    Object.assign(rFilter, { q: '', status: '', reason: '', section: '', link: '', sort: 'new' });
+    $('#rSearch').value = '';
+    $('#rStatus').value = '';
+    $('#rReason').value = '';
+    $('#rSection').value = '';
+    $('#rLink').value = '';
+    $('#rSort').value = 'new';
+    rExpanded.clear();
+    loadReported(0);
+  };
+  $('#rRefresh').onclick = () => { loadReported(rOff); loadReportedSummary(); };
+  $('#rPrev').onclick = () => loadReported(Math.max(0, rOff - REPORT_PAGE));
+  $('#rNext').onclick = () => loadReported(rOff + REPORT_PAGE);
 
   /* ---------------------------------------------------------------- tabs */
 
-  function switchTab(name) {
+  const TAB_NAMES = ['overview', 'verify', 'dupes', 'review', 'questions', 'reported'];
+
+  // Real tablist semantics: roles, selection state, a single tab stop and
+  // arrow/Home/End keys, so the console is usable without a mouse.
+  function wireTabs() {
+    const nav = $('#tabs');
+    nav.setAttribute('role', 'tablist');
+    nav.setAttribute('aria-label', 'Console sections');
+    TAB_NAMES.forEach(name => {
+      const section = $(`#tab-${name}`);
+      if (!section) return;
+      section.setAttribute('role', 'tabpanel');
+      section.setAttribute('aria-labelledby', `tabbtn-${name}`);
+    });
+    $$('#tabs button').forEach(button => {
+      const name = button.dataset.tab;
+      button.id = `tabbtn-${name}`;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-controls', `tab-${name}`);
+      button.onclick = () => switchTab(name);
+      button.onkeydown = event => {
+        const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+        if (!step && event.key !== 'Home' && event.key !== 'End') return;
+        event.preventDefault();
+        const enabled = $$('#tabs button').filter(item => !item.disabled);
+        if (!enabled.length) return;
+        const at = enabled.indexOf(button);
+        const next = event.key === 'Home' ? enabled[0]
+          : event.key === 'End' ? enabled[enabled.length - 1]
+          : enabled[(at + step + enabled.length) % enabled.length];
+        switchTab(next.dataset.tab);
+        next.focus();
+      };
+    });
+    // Announce only the primary status lines; a live region on every status
+    // would talk over itself.
+    ['#connectStatus', '#reviewBulk', '#verifyBanner'].forEach(selector => {
+      const element = $(selector);
+      if (element) element.setAttribute('aria-live', 'polite');
+    });
+  }
+
+  function switchTab(name, scroll = true) {
+    if (!TAB_NAMES.includes(name)) name = 'overview';
     state.tab = name;
-    $$('#tabs button').forEach(button => button.classList.toggle('on', button.dataset.tab === name));
+    try { sessionStorage.setItem('abhyas.tab', name); } catch { /* private mode */ }
+    $$('#tabs button').forEach(button => {
+      const on = button.dataset.tab === name;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-selected', String(on));
+      button.setAttribute('tabindex', on ? '0' : '-1');
+    });
     $$('main > section').forEach(section => { section.hidden = section.id !== `tab-${name}`; });
+    if (scroll) {
+      const top = $('#tabs').getBoundingClientRect().top + window.scrollY - 60;
+      if (top > 0) window.scrollTo({ top, behavior: 'smooth' });
+    }
     if (name === 'overview') loadOverview();
     if (name === 'dupes') loadDupes(0);
     if (name === 'review') loadReview(0);
     if (name === 'questions') loadQuestions(0);
     if (name === 'reported') loadReported(0);
   }
-  $$('#tabs button').forEach(button => { button.onclick = () => switchTab(button.dataset.tab); });
 
   /* ---------------------------------------------------------------- runs */
 
@@ -1591,6 +1978,9 @@
 
   /* ---------------------------------------------------------------- boot */
 
+  const storedTab = sessionStorage.getItem('abhyas.tab');
+  if (TAB_NAMES.includes(storedTab)) state.tab = storedTab;
+  wireTabs();
   setConnected(false);
   const stored = sessionStorage.getItem('abhyas.dsn');
   if (stored) {

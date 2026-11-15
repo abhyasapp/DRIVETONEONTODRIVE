@@ -122,9 +122,11 @@ def stable_qn_id_from_parts(level_key: str, chapter_key: str, subtopic_code: str
 
 def _level_token_fallback(level_key: str) -> str:
     label = ""
+    conn = None
     try:
         from utils.db import connect as _db_connect
-        c2 = _db_connect(os.getenv("DATABASE_URL")).cursor()
+        conn = _db_connect(os.getenv("DATABASE_URL"))
+        c2 = conn.cursor()
         c2.execute("SELECT label FROM levels WHERE level_key = %s", (level_key,))
         row = c2.fetchone()
         if row:
@@ -132,6 +134,14 @@ def _level_token_fallback(level_key: str) -> str:
         c2.close()
     except Exception:
         label = ""
+    finally:
+        # This used to close only the cursor and leak a Neon connection for
+        # every custom level in a run.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     first = (label or level_key or "?")[0]
     return str(first).upper()
 
