@@ -54,6 +54,22 @@ jobs:
           python -m unittest tests.test_corrections tests.test_apply_corrections_qid tests.test_dedupe_logic tests.test_pipeline \
             tests.test_keyword_match tests.test_export_ids
 
+      # The console ships its own identity/keyword JS and its own SQL. Both are
+      # checked against the Python and against Postgres here; until now no CI
+      # step ran them, so a drift would only be found by hand.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Console parity and SQL tests (offline)
+        run: |
+          set -euo pipefail
+          node tests/test_console_identity.mjs
+          npm install --no-save @electric-sql/pglite
+          node tests/test_admin_sql.mjs
+          node tests/test_reported_sql.mjs
+
       # ----- credentials -------------------------------------------------
 
       - name: Check required secrets exist

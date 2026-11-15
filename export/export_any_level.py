@@ -241,6 +241,27 @@ def export_level(cur, level_key, include_unanswered, dry_run,
         print(f"  {level_key}: no questions to export")
         return 0, 0
 
+    # A public qn id is the only stable identity the app has for a question.
+    # When the caller asked to publish it, a row without one would silently
+    # export the internal DB id as `id` and `public_qn: null`, so the app would
+    # key progress on an id that changes at the next re-export. Refuse instead:
+    # the swap never runs, the previous export stays in place, and the run
+    # fails loudly (export is a fatal step). Rows are (…, qid, …, stable_qn_id),
+    # so index 4 is the DB id and index 9 the public id.
+    missing_public_id = [r[4] for r in rows if not r[9]]
+    if public_qn and missing_public_id:
+        raise SystemExit(
+            f"  ERROR: {level_key}: {len(missing_public_id)} of {len(rows)} "
+            f"questions have no stable public qn id (first: DB id "
+            f"{missing_public_id[0]}).\n"
+            f"         Run `python -m export.assign_stable_qn_ids` (the "
+            f"pipeline's qn_ids step) and export again."
+        )
+    if missing_public_id:
+        print(f"  WARNING: {level_key}: {len(missing_public_id)} of {len(rows)} "
+              f"questions have no public qn id; they export with "
+              f"public_qn: null. Run the qn_ids step to assign them.")
+
     images_by_qid = fetch_images_for(cur, [r[4] for r in rows])
     grouped = group_rows(rows)
 

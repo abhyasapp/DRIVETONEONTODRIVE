@@ -39,7 +39,11 @@ export/      export_any_level, generate_chapters_data_all, assign_stable_qn_ids
              and corrections stay stable even when parts are renumbered, and
              `public_qn` = the readable stable id (LCCCSSSFQQQQ). The `qn_ids`
              step fills that id before export; `--public-qn` additionally moves
-             it into `id` for a future client migration.
+             it into `id` for a future client migration. With `--public-qn` the
+             export refuses to run (non-zero exit, previous export untouched)
+             if any question still lacks a public id, because falling back to
+             the internal DB id would hand the app an identity that changes on
+             the next re-export. Without the flag it only warns.
 upload/      upload_any_level, upload_chapters_data
              safety: the prune pass is skipped for a level whenever any
              local file cannot be mapped to a DB subtopic, so good Drive
@@ -51,8 +55,9 @@ review/      dashboard.py + duplicate_reviews.py  (local admin reviewer)
              index.html + admin_functions.sql + identity.js  (hosted console)
 tools/       cleanup_drive, boost_keywords   (manual helpers)
 tests/       smoke.py + unittest suites        (offline, run in CI)
-             node suites: identity parity, admin SQL, reported SQL
-             (need PGlite: npm install --no-save @electric-sql/pglite)
+             node suites: identity parity (no deps), admin SQL, reported SQL
+             (the SQL suites need PGlite: npm install --no-save @electric-sql/pglite)
+             all of them run in CI before the pipeline starts
 archive/     one-off scripts, not used by the pipeline
 ```
 

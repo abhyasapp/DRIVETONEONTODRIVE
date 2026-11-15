@@ -458,17 +458,28 @@ def main() -> None:
         levels = [l for l in levels if l in known]
 
     total_assigned = total_reused = total_skipped = total_rejected = 0
-    for lv in levels:
-        a, r, s, x = assign_for_level(conn, lv)
-        total_assigned += a
-        total_reused += r
-        total_skipped += s
-        total_rejected += x
-        print(f"{lv}: assigned={a} reused={r} skipped={s} rejected={x}")
+    # Every level is written in one transaction that is committed only after all
+    # of them succeeded, so a collision leaves the table exactly as it was. The
+    # failure is reported as one actionable line instead of a traceback.
+    try:
+        for lv in levels:
+            a, r, s, x = assign_for_level(conn, lv)
+            total_assigned += a
+            total_reused += r
+            total_skipped += s
+            total_rejected += x
+            print(f"{lv}: assigned={a} reused={r} skipped={s} rejected={x}")
+        conn.commit()
+    except RuntimeError as exc:
+        conn.rollback()
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print("Nothing was written: the whole run was rolled back.",
+              file=sys.stderr)
+        sys.exit(1)
+    finally:
+        cur.close()
+        conn.close()
 
-    conn.commit()
-    cur.close()
-    conn.close()
     print(f"TOTAL: assigned={total_assigned} reused={total_reused} skipped={total_skipped} rejected={total_rejected}")
 
 
