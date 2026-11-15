@@ -345,6 +345,40 @@ def api_questions(params):
     return {"total": total, "rows": rows, "limit": limit, "offset": offset}
 
 
+def api_reported(params):
+    limit = max(1, min(int(params.get("limit", ["50"])[0]), 200))
+    offset = max(0, int(params.get("offset", ["0"])[0]))
+    status_filter = (params.get("status", [""])[0] or "").strip()
+    where, args = [], []
+    if status_filter:
+        where.append("rq.status = %s")
+        args.append(status_filter)
+    condition = ("WHERE " + " AND ".join(where)) if where else ""
+    total = one(f"SELECT count(*)::int c FROM reported_questions rq {condition}", tuple(args))["c"]
+    rows = query(f"""
+        SELECT rq.id AS report_id, rq.uid, rq.qid, rq.file_id, rq.question_snapshot,
+               rq.options_snapshot, rq.correct_index, rq.chosen_index, rq.reason,
+               rq.note, rq.reported_by, rq.reported_at, rq.status, rq.resolved_at,
+               rq.resolved_by, rq.corrected, rq.section, rq.app_version,
+               q.question_text, q.options, q.correct_index AS q_correct_index,
+               q.corrected_at AS q_corrected_at
+        FROM reported_questions rq
+        LEFT JOIN questions q ON q.id = rq.qid
+        {condition}
+        ORDER BY rq.reported_at DESC NULLS LAST
+        LIMIT %s OFFSET %s
+    """, tuple(args + [limit, offset]))
+    return {"total": total, "rows": rows, "limit": limit, "offset": offset}
+
+
+def api_reported_resolve(body):
+    rid = str(body.get("id") or "").strip()
+    if not rid:
+        return {"ok": False, "error": "id required"}
+    rows = query("UPDATE reported_questions SET status='resolved', resolved_at=now(), resolved_by='console' WHERE id=%s RETURNING id", (rid,))
+    return {"ok": bool(rows), "id": rid}
+
+
 def ensure_schema():
     global _conn
     with _lock:
@@ -547,10 +581,12 @@ ROUTES = {
     "/api/dupes":api_dupes,
     "/api/dup/detail":api_dup_detail,
     "/api/questions":api_questions,
+    "/api/reported":api_reported,
     "/api/review/candidates":api_review_candidates,
 }
 POST_ROUTES = {
     "/api/delete":api_delete_dispatch,
+    "/api/reported/resolve":lambda b:api_reported_resolve(b),
     "/api/edit":lambda b:_review_write(api_edit,b),
     "/api/review/action":lambda b:_review_write(api_review,b),
     "/api/review/refresh":lambda b:api_review_refresh(b),

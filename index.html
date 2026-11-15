@@ -127,6 +127,7 @@
     <button data-tab="dupes">Exact duplicates</button>
     <button data-tab="review">Near duplicates</button>
     <button data-tab="questions">Questions</button>
+    <button data-tab="reported">Reported</button>
   </nav>
 
   <main>
@@ -223,6 +224,22 @@
         </select>
       </div>
       <div id="qList"><div class="empty">Loading…</div></div>
+    </section>
+    <section class="panel" id="tab-reported" hidden>
+      <div class="panel-head">
+        <div><h2>Reported questions</h2><div class="muted">Questions flagged by users, migrated from Supabase/GAS into Neon. Edit to correct; resolve when done.</div></div>
+        <div class="row">
+          <select id="rStatus" class="select">
+            <option value="">all</option>
+            <option value="open">open</option>
+            <option value="resolved">resolved</option>
+          </select>
+          <button class="button ghost" id="rPrev">‹ Prev</button>
+          <span class="status" id="rPos"></span>
+          <button class="button ghost" id="rNext">next ›</button>
+        </div>
+      </div>
+      <div id="rList"><div class="empty">Loading…</div></div>
     </section>
   </main>
 
@@ -1461,6 +1478,46 @@
     }
   });
 
+  /* ---------------------------------------------------------------- reported */
+
+  let rOff = 0;
+  async function loadReported(off) {
+    if (off != null) rOff = off;
+    const params = new URLSearchParams({ limit: 50, offset: rOff });
+    const st = $('#rStatus').value;
+    if (st) params.set('status', st);
+    const d = await get('/api/reported?' + params);
+    if (!d) return;
+    $('#rPos').textContent = d.total ? `${rOff + 1}–${Math.min(rOff + 50, d.total)} of ${d.total}` : '0';
+    $('#rPrev').disabled = rOff <= 0;
+    $('#rNext').disabled = rOff + 50 >= d.total;
+    $('#rList').innerHTML = (d.rows || []).map(r => `
+      <div class="copy">
+        <div class="hdr">
+          <span>report #${esc(r.report_id)}</span>
+          <span>qid ${esc(r.qid ?? '—')}</span>
+          <span>${esc(r.reason || '')}</span>
+          <span>${esc(r.status || '')}</span>
+          <span>${esc(r.section || '')}</span>
+          ${r.qid ? `<button class="pg" data-edit="${r.qid}">edit question</button>` : ''}
+          ${r.status !== 'resolved' ? `<button class="pg" data-resolve="${esc(r.report_id)}">resolve</button>` : ''}
+        </div>
+        <div class="stem">${esc(r.question_text || r.question_snapshot || '')}</div>
+        ${(r.options || []).map((o, i) => `<div class="opt ${i === r.q_correct_index ? 'right' : ''}">[${i}] ${esc(o)}</div>`).join('')}
+        ${r.note ? `<div class="exp">note: ${esc(r.note)}</div>` : ''}
+        ${r.corrected ? `<div class="exp">corrected ${esc(r.resolved_at || '')}</div>` : ''}
+      </div>
+    `).join('') || '<div class="empty">No reported questions.</div>';
+    $('#rList').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(+b.dataset.edit, () => loadReported()));
+    $('#rList').querySelectorAll('[data-resolve]').forEach(b => b.onclick = async () => {
+      const x = await post('/api/reported/resolve', { id: b.dataset.resolve });
+      if (x && x.ok) loadReported();
+    });
+  }
+  $('#rStatus').onchange = () => loadReported(0);
+  $('#rPrev').onclick = () => loadReported(Math.max(0, rOff - 50));
+  $('#rNext').onclick = () => loadReported(rOff + 50);
+
   /* ---------------------------------------------------------------- tabs */
 
   function switchTab(name) {
@@ -1471,6 +1528,7 @@
     if (name === 'dupes') loadDupes(0);
     if (name === 'review') loadReview(0);
     if (name === 'questions') loadQuestions(0);
+    if (name === 'reported') loadReported(0);
   }
   $$('#tabs button').forEach(button => { button.onclick = () => switchTab(button.dataset.tab); });
 
