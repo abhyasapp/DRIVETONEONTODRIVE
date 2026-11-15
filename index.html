@@ -311,7 +311,7 @@
   const fmt = value => num(value).toLocaleString();
   const Identity = window.AbhyasIdentity;
 
-  const JSON_COLUMNS = new Set(['options', 'matched_keywords', 'raw', 'snapshot', 'correct', 'q1_options', 'q2_options']);
+  const JSON_COLUMNS = new Set(['options', 'options_snapshot', 'matched_keywords', 'raw', 'snapshot', 'correct', 'q1_options', 'q2_options']);
   const OPTION_COUNT = "(CASE WHEN jsonb_typeof(options) = 'array' THEN jsonb_array_length(options) ELSE 0 END)";
   const UNANSWERED = "correct_index IS NULL AND coalesce(btrim(correct_text), '') = ''";
   const UNANSWERED_Q = "q.correct_index IS NULL AND coalesce(btrim(q.correct_text), '') = ''";
@@ -1483,36 +1483,56 @@
   let rOff = 0;
   async function loadReported(off) {
     if (off != null) rOff = off;
-    const params = new URLSearchParams({ limit: 50, offset: rOff });
-    const st = $('#rStatus').value;
-    if (st) params.set('status', st);
-    const d = await get('/api/reported?' + params);
-    if (!d) return;
-    $('#rPos').textContent = d.total ? `${rOff + 1}–${Math.min(rOff + 50, d.total)} of ${d.total}` : '0';
-    $('#rPrev').disabled = rOff <= 0;
-    $('#rNext').disabled = rOff + 50 >= d.total;
-    $('#rList').innerHTML = (d.rows || []).map(r => `
-      <div class="copy">
-        <div class="hdr">
-          <span>report #${esc(r.report_id)}</span>
-          <span>qid ${esc(r.qid ?? '—')}</span>
-          <span>${esc(r.reason || '')}</span>
-          <span>${esc(r.status || '')}</span>
-          <span>${esc(r.section || '')}</span>
-          ${r.qid ? `<button class="pg" data-edit="${r.qid}">edit question</button>` : ''}
-          ${r.status !== 'resolved' ? `<button class="pg" data-resolve="${esc(r.report_id)}">resolve</button>` : ''}
+    const target = $('#rList');
+    target.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const st = $('#rStatus').value;
+      const where = st ? 'WHERE rq.status = $1' : '';
+      const params = st ? [st] : [];
+      const totalRow = await sqlOne(`SELECT count(*)::int AS n FROM reported_questions rq ${where}`, params);
+      const total = num(totalRow.n);
+      const rows = await sql(`
+        SELECT rq.id AS report_id, rq.uid, rq.qid, rq.file_id, rq.question_snapshot,
+               rq.options_snapshot, rq.correct_index, rq.chosen_index, rq.reason,
+               rq.note, rq.reported_by, rq.reported_at, rq.status, rq.resolved_at,
+               rq.resolved_by, rq.corrected, rq.section, rq.app_version,
+               q.question_text, q.options, q.correct_index AS q_correct_index,
+               q.corrected_at AS q_corrected_at
+        FROM reported_questions rq
+        LEFT JOIN questions q ON q.id = rq.qid
+        ${where}
+        ORDER BY rq.reported_at DESC NULLS LAST
+        LIMIT 50 OFFSET $${params.length + 1}`,
+        [...params, rOff]);
+      $('#rPos').textContent = total ? `${rOff + 1}–${Math.min(rOff + 50, total)} of ${fmt(total)}` : '0';
+      $('#rPrev').disabled = rOff <= 0;
+      $('#rNext').disabled = rOff + 50 >= total;
+      target.innerHTML = rows.length ? rows.map(r => `
+        <div class="copy">
+          <div class="hdr">
+            <span>report #${esc(r.report_id)}</span>
+            <span>qid ${esc(r.qid ?? '—')}</span>
+            <span>${esc(r.reason || '')}</span>
+            <span>${esc(r.status || '')}</span>
+            <span>${esc(r.section || '')}</span>
+            ${r.qid ? `<button class="pg" data-edit="${r.qid}">edit question</button>` : ''}
+            ${r.status !== 'resolved' ? `<button class="pg" data-resolve="${esc(r.report_id)}">resolve</button>` : ''}
+          </div>
+          <div class="stem">${esc(r.question_text || r.question_snapshot || '')}</div>
+          ${(Array.isArray(r.options) ? r.options : (Array.isArray(r.options_snapshot) ? r.options_snapshot : [])).map((o, i) => `<div class="opt ${i === r.q_correct_index ? 'right' : ''}">[${i}] ${esc(o)}</div>`).join('')}
+          ${r.note ? `<div class="exp">note: ${esc(r.note)}</div>` : ''}
         </div>
-        <div class="stem">${esc(r.question_text || r.question_snapshot || '')}</div>
-        ${(r.options || []).map((o, i) => `<div class="opt ${i === r.q_correct_index ? 'right' : ''}">[${i}] ${esc(o)}</div>`).join('')}
-        ${r.note ? `<div class="exp">note: ${esc(r.note)}</div>` : ''}
-        ${r.corrected ? `<div class="exp">corrected ${esc(r.resolved_at || '')}</div>` : ''}
-      </div>
-    `).join('') || '<div class="empty">No reported questions.</div>';
-    $('#rList').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(+b.dataset.edit, () => loadReported()));
-    $('#rList').querySelectorAll('[data-resolve]').forEach(b => b.onclick = async () => {
-      const x = await post('/api/reported/resolve', { id: b.dataset.resolve });
-      if (x && x.ok) loadReported();
-    });
+      `).join('') : '<div class="empty">No reported questions.</div>';
+      $$('#rList [data-edit]').forEach(b => b.onclick = () => openEditor(num(b.dataset.edit), () => loadReported()));
+      $$('#rList [data-resolve]').forEach(b => b.onclick = async () => {
+        try {
+          await sqlOne('UPDATE reported_questions SET status=$1, resolved_at=now(), resolved_by=$2 WHERE id=$3 RETURNING id', ['resolved', 'console', b.dataset.resolve]);
+          loadReported();
+        } catch (error) { alert(error.message); }
+      });
+    } catch (error) {
+      target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
+    }
   }
   $('#rStatus').onchange = () => loadReported(0);
   $('#rPrev').onclick = () => loadReported(Math.max(0, rOff - 50));
