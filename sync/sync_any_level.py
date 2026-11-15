@@ -162,16 +162,6 @@ LEVEL_CONFIG = {
         "use_subfolder_as_book": True,
         "use_file_as_book":      False,
         "root_file_map": {},
-        # Additive roots: scanned in addition to `root`, never instead of it.
-        # Existing DB files therefore cannot be orphaned by adding one.
-        "extra_roots": [
-            {
-                "root":        "1gJbMt1FbmIg82xXobNW5iOGkpELyPcvp",
-                "chapter_key": "8",
-                "book":        "Level 7 Engineering",
-                "flatten":     True,
-            },
-        ],
     },
 }
 
