@@ -279,12 +279,36 @@ def find_match(cur, before_question, before_options, before_identity, file_id=No
     return None,"not_found"
 
 
+def _question_id_for_qid(cur, raw):
+    """The questions.id that a qid names, or None.
+
+    Internal ids are purely numeric. Everything else is a public qn id in the
+    shape the export publishes ("50011.110001", "G0011.110001",
+    "5002mixedqn10001"), so it is looked up in stable_qn_id case-insensitively:
+    the app stores those ids lowercased, while the export keeps the level
+    token's case.
+    """
+    if raw.isdigit():
+        return int(raw)
+    cur.execute(
+        "SELECT id FROM questions WHERE lower(stable_qn_id) = lower(%s) "
+        "LIMIT 1",
+        (raw,),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def find_by_qid(cur, qid):
     """Resolve the stable question id first, following canonical_id hops."""
     raw = str(qid or "").strip()
-    if not raw.isdigit():
+    if not raw:
         return None, "qid_missing"
-    current = int(raw)
+    current = _question_id_for_qid(cur, raw)
+    if current is None:
+        # A non-numeric id never had a row before this lookup existed, so this
+        # is the same outcome as an unknown numeric id: not found.
+        return None, "qid_not_found"
     for _ in range(10):
         cur.execute("""SELECT q.id,q.question_text,q.options,q.file_ref_id,
                 q.source_question_key,q.corrected_at,f.file_id,c.id,

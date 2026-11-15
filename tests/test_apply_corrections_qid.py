@@ -24,6 +24,21 @@ class FakeCursor:
         return ROWS.get(self.key)
 
 
+class PublicIdCursor(FakeCursor):
+    """Answers the public-id lookup, then the by-id lookup it resolves to."""
+
+    PUBLIC = {"g0011.110001": 10, "50011.110001": 10, "5002mixedqn10001": 10}
+
+    def execute(self, sql, params):
+        self.sql = sql
+        self.key = params[0]
+
+    def fetchone(self):
+        if "stable_qn_id" in getattr(self, "sql", ""):
+            return (PublicIdCursor.PUBLIC.get(str(self.key).lower()),)
+        return ROWS.get(self.key)
+
+
 class QidMatchTests(unittest.TestCase):
     def setUp(self):
         self.cur = FakeCursor()
@@ -44,6 +59,18 @@ class QidMatchTests(unittest.TestCase):
 
     def test_numeric_string_id_is_accepted(self):
         self.assertEqual(match_by_qid(self.cur, "10")[0], 10)
+
+    def test_public_qn_id_resolves_case_insensitively(self):
+        # The export writes "G0011.110001"; the app stores "g0011.110001".
+        self.assertEqual(match_by_qid(PublicIdCursor(), "G0011.110001")[0], 10)
+        self.assertEqual(match_by_qid(PublicIdCursor(), "g0011.110001")[0], 10)
+
+    def test_other_published_shapes_resolve(self):
+        self.assertEqual(match_by_qid(PublicIdCursor(), "50011.110001")[0], 10)
+        self.assertEqual(match_by_qid(PublicIdCursor(), "5002mixedqn10001")[0], 10)
+
+    def test_unknown_public_id_is_not_found(self):
+        self.assertIsNone(match_by_qid(PublicIdCursor(), "G9999.999999"))
 
     def test_find_match_prefers_qid_over_content(self):
         row, why = find_match(self.cur, "99. unrelated", ["z"], "id", file_id="F", qid=11)
