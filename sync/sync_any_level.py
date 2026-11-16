@@ -1073,6 +1073,22 @@ def sync_level(level_key, workers=DEFAULT_WORKERS, batch_size=DEFAULT_BATCH,
         cur.close(); conn.close()
         return
 
+    # A partial listing (renamed/unmapped chapter folder, permission change,
+    # depth cap, Drive hiccup) looks exactly like "everything was deleted".
+    # Refuse to hard-delete a large share of known files in one run.
+    max_pct = float(os.getenv("SYNC_MAX_DELETE_PCT", "10"))
+    max_abs = int(os.getenv("SYNC_MAX_DELETE_FILES", "25"))
+    if deleted_refs and os.getenv("SYNC_ALLOW_MASS_DELETE") != "1":
+        share = 100.0 * len(deleted_refs) / max(len(known), 1)
+        if len(deleted_refs) > max_abs or share > max_pct:
+            cur.close(); conn.close()
+            raise SystemExit(
+                f"ABORT {level_key}: {len(deleted_refs)} of {len(known)} known "
+                f"files ({share:.0f}%) are missing from Drive - more than the "
+                f"safety limit (>{max_abs} files or >{max_pct:g}%). Nothing was "
+                f"deleted. Check for a renamed or unshared folder; if the "
+                f"removal is intended, re-run with SYNC_ALLOW_MASS_DELETE=1.")
+
     for ref in deleted_refs:
         hard_delete_file(cur, ref)
     conn.commit()

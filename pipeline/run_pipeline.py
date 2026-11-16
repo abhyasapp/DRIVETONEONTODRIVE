@@ -20,8 +20,8 @@ Steps (12):
 
 Behaviour:
   * Exit code is NON-ZERO if pre-flight fails or a FATAL_STEPS member
-    (sync / corrections / dedupe / export / upload) fails. Non-fatal
-    failures (kw_*, gemini, chapters) are logged in the SUMMARY but do
+    (sync / corrections / dedupe / export / upload / chapters / chapters_up)
+    fails. Non-fatal failures (kw_*, gemini) are logged in the SUMMARY but do
     not turn the run red.
   * --quiet still prints the last lines of any failing step (tracebacks).
   * Optional steps are skipped cleanly when their script is missing.
@@ -106,6 +106,18 @@ def _env_int(name, default):
 # (export / upload / chapters) still get to run.
 GEMINI_TIMEOUT = _env_int("GEMINI_STEP_TIMEOUT", 28800)
 
+# Parts are assigned by a hash of the question id, so deleting or adding one
+# question no longer shifts every later part (and re-uploads them all).
+# EXPORT_STABLE_PARTS=0 restores sequential 50/50/37 splitting.
+EXPORT_EXTRA = ([] if os.getenv("EXPORT_STABLE_PARTS", "1") == "0"
+                else ["--stable-parts"])
+
+# Optional wall-clock budget for the whole run (seconds). In CI set it a bit
+# below the job timeout: the elastic Gemini step is then shortened so that
+# export / upload / chapters always get time to finish.
+PIPELINE_BUDGET = _env_int("PIPELINE_BUDGET_SECONDS", 0)
+BUDGET_RESERVE_AFTER_GEMINI = 1500   # qn_ids + export + upload + chapters
+
 STEPS = [
     ("sync",        "Sync from Drive",
      "sync.sync_any_level", ["all"],                        1800),
@@ -132,7 +144,7 @@ STEPS = [
     ("qn_ids",      "Assign stable public qn ids",
      "export.assign_stable_qn_ids", [],                        600),
     ("export",      "Export to JSON (stable parts)",
-     "export.export_any_level", ["all"],                       900),
+     "export.export_any_level", ["all"] + EXPORT_EXTRA,        900),
     ("upload",      "Upload JSON to Drive",
      "upload.upload_any_level", ["all", "--workers", "6"],    1800),
     ("chapters",    "Generate chapters-data",
@@ -154,9 +166,13 @@ PARALLEL_PREFIX = "kw_"
 #     yesterday's questions — silent divergence. Must fail loudly.
 #   - upload: if Drive upload fails, the app keeps serving yesterday's
 #     JSON while Neon moved on — silent divergence. Must fail loudly.
+#   - chapters / chapters_up: chapters-data.js is the app's index of every
+#     exported part. If it is not regenerated and uploaded, the app keeps an
+#     index that points at old parts while the parts themselves moved on.
 # Add "sync" here if you want a Drive outage to red the run (arguably
 # correct: with sync failed, the pipeline re-exports stale Neon data).
-FATAL_STEPS = {"sync", "corrections", "dedupe", "export", "upload"}
+FATAL_STEPS = {"sync", "corrections", "dedupe", "export", "upload",
+               "chapters", "chapters_up"}
 
 # A failed sync is worth one retry before the run stops; corrections retries
 # its own HTTP calls internally. Keep the fatal set above for everything that
@@ -426,6 +442,10 @@ def preflight(step_names):
     if "sync" in set(step_names) and not os.path.exists(
             os.path.join(PROJECT, "service-account.json")):
         problems.append("service-account.json missing")
+
+    if "gemini" in set(step_names) and not (
+            os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY_2")):
+        problems.append("GEMINI_API_KEY not set (or run with --skip-gemini)")
 
     if needs_drive:
         # Drive upload auth: JSON token in env (CI) OR local pickle file.
@@ -718,6 +738,8 @@ def main():
 
         results = []
         aborted = False
+        aborted_by = None
+        run_started = time.time()
         skip_gemini_check_done = False
 
         for kind, payload in runs:
@@ -732,6 +754,17 @@ def main():
                             prefix="gemini")
                         results.append((name, True, 0.0, "skipped"))
                         continue
+
+                if name == "gemini" and PIPELINE_BUDGET:
+                    left = PIPELINE_BUDGET - (time.time() - run_started) \
+                        - BUDGET_RESERVE_AFTER_GEMINI
+                    if left < 300:
+                        log(fh, f"  (skipped -- only {max(int(left), 0)}s of the "
+                                f"run budget left; later steps keep priority)",
+                            prefix="gemini")
+                        results.append((name, True, 0.0, "skipped (budget)"))
+                        continue
+                    timeout = int(min(timeout, left))
 
                 log(fh, "-" * 60)
                 log(fh, f">> {name}  --  {label}")
@@ -762,6 +795,7 @@ def main():
                 if not ok and name in FATAL_STEPS:
                     log(fh, f"  !! {name} failed -- stopping pipeline.")
                     aborted = True
+                    aborted_by = name
                     break
 
             else:
@@ -804,11 +838,10 @@ def main():
     # Non-zero exit so CI (GitHub Actions / Task Scheduler) notices failures.
     # Only failures in FATAL_STEPS turn the run red. Non-fatal failures
     # (kw_*, gemini, chapters) are already summarized above; they do not fail CI.
+    # 0 ok | 1 a fatal step failed | 2 pre-flight failed | 3 dedupe aborted
     if aborted:
-        sys.exit(3)
-    fatal_failures = [r for r in failed if r[0] in FATAL_STEPS]
-    if fatal_failures:
-        sys.exit(1)
+        sys.exit(3 if aborted_by == "dedupe" else 1)
+    # Non-fatal failures (kw_*, gemini) are in the SUMMARY but do not fail CI.
 
 
 if __name__ == "__main__":

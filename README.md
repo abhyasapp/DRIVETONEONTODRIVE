@@ -91,7 +91,7 @@ with a blank answer.
 
 Exit codes: `0` ok, `1` a fatal step failed, `2` pre-flight failed, `3` dedupe aborted.
 FATAL steps (turn the whole run red, and stop before later steps): `sync`,
-`corrections`, `dedupe`, `export`, `upload`. A failed Drive sync or correction
+`corrections`, `dedupe`, `export`, `upload`, `chapters`, `chapters_up`. A failed Drive sync or correction
 pass must never publish stale Neon/Drive content, so those now fail closed.
 `sync` gets one automatic retry; correction HTTP calls retry transient
 timeouts, `429` and `5xx` with backoff.
@@ -100,6 +100,41 @@ Export splits each subtopic into parts of 50 questions in order and only the
 last part carries the remainder (137 questions -> 50 / 50 / 37).
 `--stable-parts` assigns each question to a part by a hash of its DB id
 instead, which keeps unchanged questions in the same file across runs.
+
+## Correct a question by qn id (admin)
+
+Three entry points, one behaviour: the question is rewritten, a source alias is
+stored so the next Drive sync cannot restore the old text, the event is logged
+in `applied_corrections`, and (console path) a before/after snapshot goes to
+`admin_corrections`. Both the numeric `questions.id` and the public qn id
+(`50011.110001`, case-insensitive) work, and ids that were merged away resolve
+to the surviving question.
+
+- **Console** — Questions tab -> *Correct by qn id* -> edit -> Save. Saving is
+  one atomic call to `abhyas_apply_correction(...)` (click *Install merge
+  functions* once after pulling this version; the console prompts for it).
+- **SQL** — `SELECT abhyas_apply_correction(ref, question, options::jsonb,
+  correct_index, explanation, identity_key, source_identity, quality,
+  source_location, source_number, note, actor)`; identity keys come from
+  `review/identity.js`. An app admin backend can call this over Neon's HTTP
+  endpoint with a scoped role.
+- **CLI** — `python -m sync.admin_apply fixes.json [--apply]` (dry run by
+  default); the JSON format is documented in the script header.
+
+The corrected text reaches students at the next export. To publish sooner, run
+the workflow manually with `only` = `qn_ids,export,upload,chapters,chapters_up`.
+
+## Safety limits (all overridable)
+
+| Guard | Default | Override |
+|---|---|---|
+| Sync refuses to hard-delete files missing from Drive | >25 files or >10% | `SYNC_ALLOW_MASS_DELETE=1`, `SYNC_MAX_DELETE_FILES`, `SYNC_MAX_DELETE_PCT` |
+| Dedupe refuses an unusually large merge | >500 merges or >5% of live questions (exit 3) | `DEDUPE_ALLOW_LARGE=1`, `DEDUPE_MAX_MERGES`, `DEDUPE_MAX_MERGE_PCT` |
+| Corrections fetch is paginated; watermark never passes unread items | 500/page, 50 pages | - |
+| One failing correction stays in `correction_backlog` and no longer blocks the run | - | `CORRECTIONS_STRICT=1` |
+| Export parts assigned by hashed id (stable files across runs) | on | `EXPORT_STABLE_PARTS=0` |
+| Gemini shortened to fit the run budget | `PIPELINE_BUDGET_SECONDS=9900` in CI | - |
+| `chapters-data.js` validated, written atomically, uploaded in place (same Drive id) | - | - |
 
 ## Question identity
 

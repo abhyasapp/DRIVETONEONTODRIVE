@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://*.neon.tech https://api.github.com 'self'; base-uri 'none'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101827">
   <meta name="description" content="Abhyas question database review console and pipeline monitor">
@@ -263,6 +264,11 @@
           <button class="button ghost" id="qNext">Next ›</button>
         </div>
       </div>
+      <div class="row" style="margin-bottom:10px">
+        <input class="grow" id="qnLookup" type="text" placeholder="Correct by qn id — e.g. 50011.110001 or 1234" aria-label="Question id to correct" autocomplete="off">
+        <button class="button primary" id="qnOpen">Open &amp; correct</button>
+        <span class="status" id="qnStatus"></span>
+      </div>
       <div class="row" style="margin-bottom:14px">
         <input class="grow" id="qSearch" type="text" placeholder="Search question text" aria-label="Search question text">
         <select id="qLevel" aria-label="Level"><option value="">All levels</option></select>
@@ -518,7 +524,7 @@
     }
     try {
       const probe = await sqlOne(`SELECT count(*)::int AS questions FROM questions WHERE canonical_id IS NULL`);
-      const helper = await sqlOne(`SELECT to_regproc('abhyas_merge_questions') IS NOT NULL AS installed`);
+      const helper = await sqlOne(`SELECT (to_regproc('abhyas_merge_questions') IS NOT NULL AND to_regproc('abhyas_apply_correction') IS NOT NULL) AS installed`);
       state.helpers = helper.installed === true || helper.installed === 't' || helper.installed === 'true';
       sessionStorage.setItem('abhyas.dsn', dsn);
       setConnected(true);
@@ -855,7 +861,7 @@
     target.innerHTML = '<div class="empty loading">Loading copies…</div>';
     try {
       const rows = await sql(`
-        SELECT q.id, q.question_number, q.question_text, q.options, q.correct_index,
+        SELECT q.id, q.stable_qn_id, q.question_number, q.question_text, q.options, q.correct_index,
                q.correct_text, q.explanation, q.quality_score::float AS quality_score,
                q.corrected_at, b.book_name, f.subtopic
         FROM questions q
@@ -1503,12 +1509,32 @@
         identity_key: row.identity_key,
         source_identity: row.source_identity
       });
-      $('#editorMeta').textContent = `#${id} · ${row.chapter_name || 'no chapter'} · ${row.book_name || 'no book'}`;
+      $('#editorMeta').textContent = `#${id}${row.stable_qn_id ? ' · ' + row.stable_qn_id : ''} · ${row.chapter_name || 'no chapter'} · ${row.book_name || 'no book'}`;
       status($('#editorStatus'), '', '');
     } catch (error) {
       status($('#editorStatus'), error.message, 'bad');
     }
   }
+
+  async function openByQnId() {
+    const target = $('#qnStatus');
+    const ref = $('#qnLookup').value.trim();
+    if (!ref) { status(target, 'Enter a qn id or question id.', 'bad'); return; }
+    status(target, 'Looking up…', 'busy');
+    try {
+      if (!state.helpers) throw new Error('Install or refresh the merge functions first (Overview tab).');
+      const hit = await sqlOne('SELECT question_id, requested_id, hops FROM abhyas_resolve_question($1)', [ref]);
+      if (!hit.question_id) throw new Error(`No live question matches "${ref}".`);
+      const merged = num(hit.hops) > 0
+        ? ` ${ref} was merged into #${hit.question_id}.` : '';
+      status(target, `Found #${hit.question_id}.${merged}`, 'good');
+      openEditor(num(hit.question_id), () => loadQuestions(state.qOffset));
+    } catch (error) {
+      status(target, error.message, 'bad');
+    }
+  }
+  $('#qnOpen').onclick = openByQnId;
+  $('#qnLookup').addEventListener('keydown', event => { if (event.key === 'Enter') openByQnId(); });
 
   $('#addOption').onclick = () => { addOptionRow('', false); renumberOptions(); };
   $('#editorClose').onclick = $('#editorCancel').onclick = () => editor.close();
@@ -1543,33 +1569,18 @@
         ? String(context.source_question_key).slice(2)
         : (String((context.raw && context.raw.q) || '').match(/^\s*(\d+)\s*[.)]/) || [])[1] || '';
 
-      await sql(`
-        UPDATE questions
-           SET question_text = $1, options = $2::jsonb, correct_index = $3,
-               correct_text = $4, explanation = $5, identity_key = $6,
-               source_identity = coalesce(source_identity, $7),
-               identity_version = 2, corrected_at = now(), quality_score = $8
-         WHERE id = $9`,
-      [text, JSON.stringify(options), correctIndex, correctText, explanation,
-        newIdentity, sourceIdentity, quality, id]);
-
-      let warning = '';
-      if ($('#editorCorrection').checked && context.chapter_id && context.book_name) {
-        try {
-          const location = await Identity.sourceLocationKey(context.book_name, context.subtopic);
-          await sql(`
-            INSERT INTO correction_source_aliases_v2
-              (chapter_id, source_identity, source_location, source_number, question_text,
-               options, correct_index, correct_text, explanation, identity_key,
-               quality_score, corrected_at)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, now())`,
-          [context.chapter_id, sourceIdentity, location, sourceNumber, text,
-            JSON.stringify(options), correctIndex, correctText, explanation, newIdentity, quality]);
-        } catch (error) {
-          warning = ` Saved, but the source correction was not recorded (${error.message}).`;
-        }
-      }
-      status(target, `Saved #${id}.${warning}`, warning ? 'bad' : 'good');
+      if (!state.helpers) throw new Error('Install or refresh the merge functions first (Overview tab) — saving now goes through one atomic database function.');
+      const location = context.book_name
+        ? await Identity.sourceLocationKey(context.book_name, context.subtopic) : null;
+      const recordSource = $('#editorCorrection').checked && Boolean(context.chapter_id && location);
+      const applied = await sqlOne(`
+        SELECT abhyas_apply_correction($1, $2, $3::jsonb, $4, $5, $6, $7, $8::real, $9, $10, $11, $12, $13) AS result`,
+      [String(id), text, JSON.stringify(options), correctIndex, explanation, newIdentity,
+        sourceIdentity, quality, location, sourceNumber, 'console edit', 'console', recordSource]);
+      const result = typeof applied.result === 'string' ? JSON.parse(applied.result) : applied.result;
+      const warning = $('#editorCorrection').checked && !result.source_recorded
+        ? ' The source correction was not recorded (no source file for this question).' : '';
+      status(target, `Saved #${result.id}${result.stable_qn_id ? ' (' + result.stable_qn_id + ')' : ''}. Live in the app after the next export.${warning}`, warning ? 'bad' : 'good');
       editor.close();
       if (editorReload) editorReload();
     } catch (error) {

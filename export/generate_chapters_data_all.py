@@ -441,8 +441,33 @@ js = (
 
 out = os.path.join("abhyas_export", "chapters-data.js")
 os.makedirs("abhyas_export", exist_ok=True)
-with open(out, "w", encoding="utf-8") as f:
-    f.write(js)
+
+# Sanity-check BEFORE replacing the previous file: an empty DB read or a
+# half-built string must never overwrite (and then get uploaded as) the
+# last good chapters-data.js.
+if not DRIVE or not any(DRIVE[lv] for lv in DRIVE):
+    raise SystemExit("ERROR: no chapters/parts found in the database - "
+                     "refusing to overwrite chapters-data.js")
+for marker in ("const DRIVE", "const CH_NAMES", "ChapterData"):
+    if marker not in js:
+        raise SystemExit(f"ERROR: generated script lacks '{marker}' - "
+                         "refusing to overwrite chapters-data.js")
+
+# Atomic write: temp file in the same directory, then rename.
+import tempfile
+fd, tmp_path = tempfile.mkstemp(dir="abhyas_export", suffix=".js.tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(js)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, out)
+except BaseException:
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    raise
 
 print(f"Wrote {out}")
 for lv in DRIVE:

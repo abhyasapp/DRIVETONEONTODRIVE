@@ -71,6 +71,7 @@ CREATE TABLE questions (
     corrected_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     file_ref_id bigint REFERENCES files(id),
+    stable_qn_id text,
     raw jsonb
 );
 CREATE TABLE question_subtopics (
@@ -106,7 +107,12 @@ CREATE TABLE dedupe_review_candidates (
     CHECK (status IN ('pending', 'merged', 'rejected'))
 );
 CREATE TABLE levels (id bigserial PRIMARY KEY, level_key text);
-CREATE TABLE applied_corrections (uid text, corrected_at timestamptz);
+CREATE TABLE applied_corrections (
+    uid text NOT NULL, corrected_at timestamptz NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now(), matched_by text,
+    question_id bigint, file_id text, before_identity text, after_identity text,
+    notes text, PRIMARY KEY (uid, corrected_at)
+);
 CREATE TABLE correction_source_aliases_v2 (
     alias_id bigserial PRIMARY KEY,
     chapter_id integer NOT NULL,
@@ -673,6 +679,56 @@ try {
     && updated[0].corrected_at !== null, updated[0]);
 } catch (error) {
   check('editor save path', false, error.message);
+}
+
+// ---- direct correction by qn id (abhyas_apply_correction) -----------------
+try {
+  await db.exec(`INSERT INTO files (id, book_id, subtopic, file_id) VALUES (900, 1, 'Direct', 'drv-direct')
+    ON CONFLICT DO NOTHING`);
+  const mk = async (text, qn) => (await rows(`INSERT INTO questions
+      (question_text, options, correct_index, correct_text, identity_key, source_identity, file_ref_id, stable_qn_id)
+      VALUES ($1, '["A","B","C"]'::jsonb, 1, 'B', 'old-ident', 'src-ident', 900, $2) RETURNING id`, [text, qn]))[0].id;
+  const live = await mk('Direct fix target', '50011.110001');
+  const merged = await mk('Direct fix duplicate', '50011.110002');
+  await db.query('UPDATE questions SET canonical_id = $1 WHERE id = $2', [live, merged]);
+
+  const opts = ['Alpha', 'Beta', 'Gamma'];
+  const ident = await Identity.identity('Direct fix target, corrected', opts);
+  const location = await Identity.sourceLocationKey('Sunil Sah', 'Direct');
+  const apply = ref => rows(`SELECT abhyas_apply_correction($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12) AS r`,
+    [ref, 'Direct fix target, corrected', JSON.stringify(opts), 2, 'why', ident, 'src-ident', 40, location, '7', 'typo', 'tester']);
+
+  const byQn = (await apply('50011.110001'.toUpperCase()))[0].r;
+  check('apply by public qn id (case-insensitive) succeeds', byQn.ok === true && Number(byQn.id) === Number(live), byQn);
+  const after = (await rows('SELECT question_text, correct_index, correct_text, identity_key, corrected_at FROM questions WHERE id=$1', [live]))[0];
+  check('apply rewrites text, answer and identity', after.question_text === 'Direct fix target, corrected'
+    && after.correct_index === 2 && after.correct_text === 'Gamma' && after.identity_key === ident && after.corrected_at !== null, after);
+
+  const viaMerged = (await apply(String(merged)))[0].r;
+  check('a merged-away id resolves to the canonical row',
+    Number(viaMerged.id) === Number(live) && viaMerged.canonical_hops === 1, viaMerged);
+
+  const aliases = await rows('SELECT source_number FROM correction_source_aliases_v2 WHERE source_identity = $1', ['src-ident']);
+  check('repeat corrections keep ONE alias per source question', aliases.length === 1, aliases);
+  const audit = await rows('SELECT before_snapshot, actor FROM admin_corrections WHERE question_id = $1 ORDER BY id', [live]);
+  check('audit snapshots every apply', audit.length === 2 && audit[0].before_snapshot.question_text === 'Direct fix target' && audit[0].actor === 'tester', audit);
+  const applied = await rows("SELECT uid FROM applied_corrections WHERE uid = $1", ['admin:' + live]);
+  check('applied_corrections is written', applied.length === 2, applied);
+
+  const bad = async (label, args) => {
+    let failed = false;
+    try { await rows(`SELECT abhyas_apply_correction($1,$2,$3::jsonb,$4,$5,$6,$7,$8)`, args); } catch { failed = true; }
+    check(label, failed);
+  };
+  await bad('unknown qn id is rejected', ['nope.1', 't', JSON.stringify(opts), 0, '', 'i', 's', 1]);
+  await bad('out-of-range answer is rejected', [String(live), 't', JSON.stringify(opts), 3, '', 'i', 's', 1]);
+  await bad('blanking an existing answer is rejected', [String(live), 't', JSON.stringify(opts), null, '', 'i', 's', 1]);
+  await bad('empty option is rejected', [String(live), 't', JSON.stringify(['A', ' ']), 0, '', 'i', 's', 1]);
+  await bad('single option is rejected', [String(live), 't', JSON.stringify(['A']), 0, '', 'i', 's', 1]);
+  const still = (await rows('SELECT question_text FROM questions WHERE id=$1', [live]))[0];
+  check('rejected calls leave the question untouched', still.question_text === 'Direct fix target, corrected', still);
+} catch (error) {
+  check('direct correction path', false, error.message);
 }
 
 if (failures.length) {

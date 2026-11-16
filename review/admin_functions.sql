@@ -731,3 +731,205 @@ BEGIN
     RETURN jsonb_build_object('ok', true, 'id', p_id, 'audit_id', v_audit_id);
 END
 $fn$;
+
+-- ---------------------------------------------------------------------------
+-- Direct correction by question id (numeric questions.id OR public qn id).
+--
+-- One call = one transaction: update the question, remember the correction so
+-- the next Drive sync cannot restore the old text, log it in
+-- applied_corrections, and keep a before/after snapshot in admin_corrections.
+-- The identity hash / quality score are computed by the caller with
+-- review/identity.js (parity-tested against dedupe/content_identity.py).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS admin_corrections (
+    id               bigserial PRIMARY KEY,
+    question_id      bigint      NOT NULL,
+    stable_qn_id     text,
+    before_snapshot  jsonb       NOT NULL,
+    after_snapshot   jsonb       NOT NULL,
+    note             text,
+    actor            text,
+    source_recorded  boolean     NOT NULL DEFAULT false,
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_corrections_question
+    ON admin_corrections (question_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS applied_corrections (
+    uid TEXT NOT NULL, corrected_at TIMESTAMPTZ NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(), matched_by TEXT,
+    question_id BIGINT, file_id TEXT, before_identity TEXT,
+    after_identity TEXT, notes TEXT, PRIMARY KEY (uid, corrected_at)
+);
+
+CREATE TABLE IF NOT EXISTS correction_source_aliases_v2 (
+    alias_id BIGSERIAL PRIMARY KEY, chapter_id INTEGER NOT NULL,
+    source_identity TEXT NOT NULL, source_location TEXT NOT NULL,
+    source_number TEXT NOT NULL DEFAULT '', question_text TEXT NOT NULL,
+    options JSONB NOT NULL, correct_index INTEGER, correct_text TEXT,
+    explanation TEXT, identity_key TEXT NOT NULL,
+    quality_score REAL NOT NULL DEFAULT 0,
+    corrected_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Resolve a reference to the LIVE question row: numeric id, or public qn id
+-- (case-insensitive), following canonical_id hops left by merges.
+CREATE OR REPLACE FUNCTION abhyas_resolve_question(p_ref text)
+RETURNS TABLE (question_id bigint, requested_id bigint, hops int)
+LANGUAGE plpgsql STABLE AS $fn$
+DECLARE
+    v_ref text := btrim(coalesce(p_ref, ''));
+    v_start bigint;
+    v_cur bigint;
+    v_canon bigint;
+    v_hops int := 0;
+BEGIN
+    IF v_ref = '' THEN RETURN; END IF;
+    IF v_ref ~ '^[0-9]{1,18}$' THEN
+        v_start := v_ref::bigint;
+    ELSE
+        SELECT q.id INTO v_start FROM questions q
+         WHERE lower(q.stable_qn_id) = lower(v_ref) LIMIT 1;
+    END IF;
+    IF v_start IS NULL THEN RETURN; END IF;
+    v_cur := v_start;
+    LOOP
+        SELECT q.canonical_id INTO v_canon FROM questions q WHERE q.id = v_cur;
+        IF NOT FOUND THEN RETURN; END IF;
+        EXIT WHEN v_canon IS NULL;
+        v_cur := v_canon;
+        v_hops := v_hops + 1;
+        IF v_hops > 10 THEN RETURN; END IF;
+    END LOOP;
+    question_id := v_cur; requested_id := v_start; hops := v_hops;
+    RETURN NEXT;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION abhyas_apply_correction(
+    p_ref             text,
+    p_question        text,
+    p_options         jsonb,
+    p_correct_index   integer,
+    p_explanation     text,
+    p_identity_key    text,
+    p_source_identity text,
+    p_quality         real,
+    p_source_location text    DEFAULT NULL,
+    p_source_number   text    DEFAULT '',
+    p_note            text    DEFAULT NULL,
+    p_actor           text    DEFAULT 'console',
+    p_record_source   boolean DEFAULT true
+) RETURNS jsonb
+LANGUAGE plpgsql AS $fn$
+DECLARE
+    v_id bigint;
+    v_requested bigint;
+    v_hops int;
+    v_old questions%ROWTYPE;
+    v_chapter_id integer;
+    v_file_id text;
+    v_correct_text text;
+    v_recorded boolean := false;
+    v_now timestamptz := now();
+    v_opt jsonb;
+BEGIN
+    SELECT r.question_id, r.requested_id, r.hops
+      INTO v_id, v_requested, v_hops
+      FROM abhyas_resolve_question(p_ref) r;
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'question reference % not found', p_ref;
+    END IF;
+
+    SELECT * INTO v_old FROM questions WHERE id = v_id FOR UPDATE;
+
+    IF btrim(coalesce(p_question, '')) = '' THEN
+        RAISE EXCEPTION 'question text cannot be empty';
+    END IF;
+    IF p_options IS NULL OR jsonb_typeof(p_options) <> 'array'
+       OR jsonb_array_length(p_options) < 2 THEN
+        RAISE EXCEPTION 'options must be an array of at least 2 entries';
+    END IF;
+    FOR v_opt IN SELECT value FROM jsonb_array_elements(p_options) LOOP
+        IF jsonb_typeof(v_opt) <> 'string' OR btrim(v_opt #>> '{}') = '' THEN
+            RAISE EXCEPTION 'every option must be non-empty text';
+        END IF;
+    END LOOP;
+    IF p_correct_index IS NULL THEN
+        -- never invent or blank an answer: only allowed if it was already unanswered
+        IF v_old.correct_index IS NOT NULL THEN
+            RAISE EXCEPTION 'correct_index is required (question already has an answer)';
+        END IF;
+    ELSIF p_correct_index < 0 OR p_correct_index >= jsonb_array_length(p_options) THEN
+        RAISE EXCEPTION 'correct_index % is outside the % options',
+            p_correct_index, jsonb_array_length(p_options);
+    END IF;
+    IF coalesce(p_identity_key, '') = '' OR coalesce(p_source_identity, '') = '' THEN
+        RAISE EXCEPTION 'identity keys are required (compute them with identity.js)';
+    END IF;
+
+    v_correct_text := CASE WHEN p_correct_index IS NULL THEN NULL
+                           ELSE p_options ->> p_correct_index END;
+
+    SELECT c.id, f.file_id INTO v_chapter_id, v_file_id
+      FROM files f JOIN books b ON b.id = f.book_id
+      JOIN chapters c ON c.id = b.chapter_id
+     WHERE f.id = v_old.file_ref_id;
+
+    UPDATE questions
+       SET question_text   = btrim(p_question),
+           options         = p_options,
+           correct_index   = p_correct_index,
+           correct_text    = v_correct_text,
+           explanation     = coalesce(p_explanation, ''),
+           identity_key    = p_identity_key,
+           source_identity = coalesce(source_identity, p_source_identity),
+           identity_version = 2,
+           quality_score   = coalesce(p_quality, 0),
+           corrected_at    = v_now
+     WHERE id = v_id;
+
+    IF p_record_source AND v_chapter_id IS NOT NULL
+       AND coalesce(p_source_location, '') <> '' THEN
+        -- newer alias supersedes older ones for the same source question
+        DELETE FROM correction_source_aliases_v2
+         WHERE chapter_id = v_chapter_id
+           AND source_identity = coalesce(v_old.source_identity, p_source_identity)
+           AND source_location = p_source_location
+           AND source_number = coalesce(p_source_number, '');
+        INSERT INTO correction_source_aliases_v2
+            (chapter_id, source_identity, source_location, source_number,
+             question_text, options, correct_index, correct_text, explanation,
+             identity_key, quality_score, corrected_at)
+        VALUES (v_chapter_id, coalesce(v_old.source_identity, p_source_identity),
+                p_source_location, coalesce(p_source_number, ''),
+                btrim(p_question), p_options, p_correct_index, v_correct_text,
+                coalesce(p_explanation, ''), p_identity_key,
+                coalesce(p_quality, 0), v_now);
+        v_recorded := true;
+    END IF;
+
+    INSERT INTO applied_corrections
+        (uid, corrected_at, matched_by, question_id, file_id, notes,
+         before_identity, after_identity)
+    VALUES ('admin:' || v_id::text, v_now, 'admin_console', v_id, v_file_id,
+            coalesce(p_note, ''), v_old.identity_key, p_identity_key);
+
+    INSERT INTO admin_corrections
+        (question_id, stable_qn_id, before_snapshot, after_snapshot, note,
+         actor, source_recorded)
+    VALUES (v_id, v_old.stable_qn_id,
+            jsonb_build_object('question_text', v_old.question_text,
+                'options', v_old.options, 'correct_index', v_old.correct_index,
+                'explanation', v_old.explanation),
+            jsonb_build_object('question_text', btrim(p_question),
+                'options', p_options, 'correct_index', p_correct_index,
+                'explanation', coalesce(p_explanation, '')),
+            p_note, coalesce(p_actor, 'console'), v_recorded);
+
+    RETURN jsonb_build_object('ok', true, 'id', v_id,
+        'requested_id', v_requested, 'canonical_hops', v_hops,
+        'stable_qn_id', v_old.stable_qn_id, 'source_recorded', v_recorded);
+END
+$fn$;

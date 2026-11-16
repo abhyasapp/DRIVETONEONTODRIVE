@@ -21,23 +21,26 @@ concurrency:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180
 
     env:
       PYTHONUNBUFFERED: "1"
-      # Keep Gemini inside the job limit so export/upload/chapters still run.
-      GEMINI_STEP_TIMEOUT: "5400"
+      # Gemini is the elastic step: cap it, and let the run budget shorten it
+      # further so export/upload/chapters always finish inside the job limit.
+      GEMINI_STEP_TIMEOUT: "3600"
+      PIPELINE_BUDGET_SECONDS: "9900"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
           cache: pip
@@ -52,13 +55,13 @@ jobs:
           set -euo pipefail
           python tests/smoke.py
           python -m unittest tests.test_corrections tests.test_apply_corrections_qid tests.test_dedupe_logic tests.test_pipeline \
-            tests.test_keyword_match tests.test_export_ids
+            tests.test_keyword_match tests.test_export_ids tests.test_hardening
 
       # The console ships its own identity/keyword JS and its own SQL. Both are
       # checked against the Python and against Postgres here; until now no CI
       # step ran them, so a drift would only be found by hand.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -66,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           node tests/test_console_identity.mjs
-          npm install --no-save @electric-sql/pglite
+          npm install --no-save --ignore-scripts @electric-sql/pglite@0.5.16
           node tests/test_admin_sql.mjs
           node tests/test_reported_sql.mjs
 
@@ -176,9 +179,25 @@ jobs:
 
       # ----- diagnostics -------------------------------------------------
 
+      - name: Open an issue when the run fails
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Daily pipeline failed ($(date -u +%F))"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                      --search "Daily pipeline failed in:title" --json number --jq '.[0].number' || true)
+          body="The scheduled run failed: $RUN_URL"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pipeline-logs-${{ github.run_id }}
           path: logs/

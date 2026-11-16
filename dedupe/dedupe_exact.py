@@ -267,6 +267,28 @@ def main():
                 show_samples(cur,args.samples)
                 print("\nDRY-RUN. No database writes performed.")
                 return
+            # Safety cap: count what this run WOULD merge before touching a row.
+            # A broken identity rule would otherwise merge the pool away.
+            cur.execute("SELECT COUNT(*) FROM questions WHERE canonical_id IS NULL")
+            live_now=cur.fetchone()[0]
+            cap=max(int(os.getenv("DEDUPE_MAX_MERGES","500")),
+                    int(live_now*float(os.getenv("DEDUPE_MAX_MERGE_PCT","5"))/100))
+            planned=0
+            probe_last=None
+            while True:
+                probe=select_group_keys(cur,after=probe_last,limit=5000)
+                if not probe:
+                    break
+                probe_last=probe[-1]
+                probe_plans,_=plan_deletions(load_groups(cur,probe))
+                planned+=len(probe_plans)
+            print(f"      Planned merges: {planned} (cap {cap})")
+            if planned>cap and os.getenv("DEDUPE_ALLOW_LARGE")!="1":
+                print(f"ABORT: {planned} merges exceed the safety cap of {cap} "
+                      f"({live_now} live questions). Nothing was changed. Inspect with "
+                      f"--samples; if intended, re-run with DEDUPE_ALLOW_LARGE=1.")
+                conn.rollback()
+                sys.exit(3)
             last=None
             total_merged=total_conflicts=0
             children=discover_question_child_fks(cur)

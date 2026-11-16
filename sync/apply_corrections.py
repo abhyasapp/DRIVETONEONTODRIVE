@@ -171,6 +171,66 @@ def fetch_corrections(since_ms, limit=500):
     return payload
 
 
+MAX_PAGES = 50
+
+
+def _to_ms(value):
+    """correctedAt may be epoch ms (int/str) or an ISO timestamp; return ms."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def fetch_all_corrections(since_ms, limit=500, max_pages=MAX_PAGES):
+    """Fetch every correction newer than since_ms, page by page.
+
+    A page that comes back full means there may be more, so the next request
+    starts just before that page's newest correctedAt (the 1 ms overlap is
+    harmless: applied_corrections de-duplicates on (uid, corrected_at)).
+
+    Returns (corrections, watermark_ms, complete). `watermark_ms` is safe to
+    store: the server clock when everything was read, otherwise the newest
+    correctedAt actually received, so nothing past it is ever skipped.
+    """
+    seen, out = set(), []
+    cursor = since_ms
+    server_now = 0
+    for _page in range(max_pages):
+        resp = fetch_corrections(cursor, limit=limit)
+        if not resp.get("success"):
+            raise BackendError(str(resp.get("error") or "backend returned success=false"))
+        batch = resp.get("corrections") or []
+        server_now = resp.get("now") or server_now
+        fresh = 0
+        for c in batch:
+            key = (c.get("uid"), str(c.get("correctedAt")))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+            fresh += 1
+        if len(batch) < limit:
+            return out, int(server_now or 0), True
+        newest = max((_to_ms(c.get("correctedAt")) for c in batch), default=0)
+        if fresh == 0 or newest <= cursor:
+            break  # no progress: stop rather than loop forever
+        cursor = max(newest - 1, cursor)
+    newest_seen = max((_to_ms(c.get("correctedAt")) for c in out), default=since_ms)
+    return out, max(newest_seen, since_ms), False
+
+
 def normalize_question_text(text):
     return re.sub(r"^\s*\d+\s*[\.\)]\s*", "", str(text or "")).strip()
 
@@ -617,20 +677,15 @@ def main():
           f"({'full scan' if args.force else 'incremental'})")
 
     try:
-        resp = fetch_corrections(since)
+        corrections, server_now, complete = fetch_all_corrections(since)
     except BackendError as e:
         print(f"Backend error: {e}")
         sys.exit(1)
 
-    if not resp.get("success"):
-        print(f"Backend error: {resp.get('error')}")
-        sys.exit(1)
+    print(f"Received {len(corrections)} correction(s)"
+          f"{'' if complete else ' (page cap reached - watermark stops at the newest one read)'}")
 
-    corrections = resp.get("corrections") or []
-    server_now = resp.get("now") or 0
-    print(f"Received {len(corrections)} correction(s)")
-
-    applied = skipped = failed = 0
+    applied = skipped = failed = unqueued = 0
     errors = []
 
     for i, c in enumerate(corrections, 1):
@@ -641,6 +696,8 @@ def main():
         if err:
             failed += 1
             errors.append((c.get("uid"), err))
+            if "backlog write failed" in err:
+                unqueued += 1
             print(f"  [{i}] {c.get('uid')}: FAILED — {err}")
             continue
 
@@ -670,7 +727,9 @@ def main():
               f"still queued {backlog_stats['skipped']}, failed {backlog_stats['failed']}")
 
     if args.apply:
-        if server_now:
+        # Never advance the watermark past a correction that was neither
+        # applied nor queued: it would be lost for good.
+        if server_now and not unqueued:
             set_last_read(cur, server_now)
         conn.commit()
         cur.execute("SELECT count(*) FROM correction_backlog")
@@ -692,7 +751,16 @@ def main():
         for uid, msg in errors[:20]:
             print(f"  {uid}: {msg}")
 
-    exit_code = 1 if (failed or (args.retry_backlog and backlog_stats["failed"])) else 0
+    # Items that failed were queued in correction_backlog and are retried on
+    # every run, so one bad correction must not block the whole publish. Only
+    # an item that could not even be queued (it would be lost) is fatal; set
+    # CORRECTIONS_STRICT=1 to make any failure fatal as before.
+    strict = os.getenv("CORRECTIONS_STRICT") == "1"
+    backlog_failed = args.retry_backlog and backlog_stats["failed"]
+    if (failed or backlog_failed) and not unqueued and not strict:
+        print(f"WARNING: {failed} new + {backlog_stats['failed']} backlog "
+              f"correction(s) failed and stay queued in correction_backlog.")
+    exit_code = 1 if (unqueued or (strict and (failed or backlog_failed))) else 0
     cur.close()
     conn.close()
     if exit_code:
