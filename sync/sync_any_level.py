@@ -947,6 +947,23 @@ def download_task(entry):
 # SYNC ONE LEVEL
 # ============================================================================
 
+def delete_guard_problem(deleted, known, env=None):
+    """Return a message when this run would hard-delete too much, else None."""
+    env = os.environ if env is None else env
+    if not deleted or env.get("SYNC_ALLOW_MASS_DELETE") == "1":
+        return None
+    max_pct = float(env.get("SYNC_MAX_DELETE_PCT", "10"))
+    max_abs = int(env.get("SYNC_MAX_DELETE_FILES", "25"))
+    share = 100.0 * deleted / max(known, 1)
+    if deleted > max_abs or share > max_pct:
+        return (f"{deleted} of {known} known files ({share:.0f}%) are missing "
+                f"from Drive - more than the safety limit (>{max_abs} files or "
+                f">{max_pct:g}%). Nothing was deleted. Check for a renamed or "
+                f"unshared folder; if the removal is intended, re-run with "
+                f"SYNC_ALLOW_MASS_DELETE=1.")
+    return None
+
+
 def sync_level(level_key, workers=DEFAULT_WORKERS, batch_size=DEFAULT_BATCH,
                dry_run=False):
     print(f"\n=== Syncing {level_key} ===")
@@ -1016,6 +1033,10 @@ def sync_level(level_key, workers=DEFAULT_WORKERS, batch_size=DEFAULT_BATCH,
                         norm_name(entry["book"]),
                         entry["subtopic"])
             db = known_by_path.get(path_key)
+            if db is not None and db["file_ref_id"] in matched_refs:
+                print(f"    [WARN] duplicate Drive file for {path_key} "
+                      f"({fid}) - skipped; keep only one copy in Drive")
+                continue
             if db is not None:
                 matched_refs.add(db["file_ref_id"])
                 to_change.append((entry, db))
@@ -1075,19 +1096,10 @@ def sync_level(level_key, workers=DEFAULT_WORKERS, batch_size=DEFAULT_BATCH,
 
     # A partial listing (renamed/unmapped chapter folder, permission change,
     # depth cap, Drive hiccup) looks exactly like "everything was deleted".
-    # Refuse to hard-delete a large share of known files in one run.
-    max_pct = float(os.getenv("SYNC_MAX_DELETE_PCT", "10"))
-    max_abs = int(os.getenv("SYNC_MAX_DELETE_FILES", "25"))
-    if deleted_refs and os.getenv("SYNC_ALLOW_MASS_DELETE") != "1":
-        share = 100.0 * len(deleted_refs) / max(len(known), 1)
-        if len(deleted_refs) > max_abs or share > max_pct:
-            cur.close(); conn.close()
-            raise SystemExit(
-                f"ABORT {level_key}: {len(deleted_refs)} of {len(known)} known "
-                f"files ({share:.0f}%) are missing from Drive - more than the "
-                f"safety limit (>{max_abs} files or >{max_pct:g}%). Nothing was "
-                f"deleted. Check for a renamed or unshared folder; if the "
-                f"removal is intended, re-run with SYNC_ALLOW_MASS_DELETE=1.")
+    problem = delete_guard_problem(len(deleted_refs), len(known))
+    if problem:
+        cur.close(); conn.close()
+        raise SystemExit(f"ABORT {level_key}: {problem}")
 
     for ref in deleted_refs:
         hard_delete_file(cur, ref)

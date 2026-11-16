@@ -632,6 +632,34 @@ $('#qs').oninput=()=>{clearTimeout(window._qt);window._qt=setTimeout(()=>loadQue
 </script></body></html>""")
 
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+ALLOWED_HOSTS = set(LOCAL_HOSTS)
+
+
+def request_allowed(headers, post=False):
+    """Block DNS-rebinding and cross-site POSTs against the local admin API.
+
+    * Host must be a loopback name (or the explicit --host), so a rebinding
+      domain pointing at 127.0.0.1 is refused.
+    * A POST must be application/json (a cross-site form or text/plain POST
+      cannot set that without a CORS preflight, which this server never
+      answers) and, if the browser sent an Origin, it must be this server.
+    """
+    host = (headers.get("Host") or "").rsplit(":", 1)[0].lower()
+    if host not in ALLOWED_HOSTS:
+        return False
+    if post:
+        ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return False
+        origin = headers.get("Origin")
+        if origin:
+            origin_host = origin.split("://", 1)[-1].rsplit(":", 1)[0].lower()
+            if origin_host not in ALLOWED_HOSTS:
+                return False
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -646,6 +674,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if not request_allowed(self.headers):
+            return self._send(403, json.dumps({"error": "forbidden host"}), "application/json")
         u = urlparse(self.path)
         if u.path == "/":
             return self._send(200, PAGE, "text/html")
@@ -659,6 +689,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, json.dumps({"error":str(exc)}), "application/json")
 
     def do_POST(self):
+        if not request_allowed(self.headers, post=True):
+            return self._send(403, json.dumps({"error": "forbidden origin"}), "application/json")
         u = urlparse(self.path)
         fn = POST_ROUTES.get(u.path)
         if not fn:
@@ -678,6 +710,7 @@ def main():
     ap.add_argument("--port", type=int, default=8790)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
+    ALLOWED_HOSTS.add(args.host.lower())
     try:
         ensure_schema()
         n = one("SELECT count(*)::int AS c FROM questions WHERE canonical_id IS NULL")["c"]

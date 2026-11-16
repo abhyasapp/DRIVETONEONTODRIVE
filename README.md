@@ -121,6 +121,14 @@ to the surviving question.
 - **CLI** — `python -m sync.admin_apply fixes.json [--apply]` (dry run by
   default); the JSON format is documented in the script header.
 
+Every console correction can be undone from *Recent corrections (undo)*:
+`abhyas_revert_correction(audit_id)` restores the previous text, answer, identity
+and source alias. It only undoes the newest un-reverted correction of a question
+and refuses if the question changed since.
+
+The local reviewer (`review/dashboard.py`) now refuses non-loopback `Host`
+headers and any cross-site or non-JSON POST (DNS-rebinding / CSRF protection).
+
 The corrected text reaches students at the next export. To publish sooner, run
 the workflow manually with `only` = `qn_ids,export,upload,chapters,chapters_up`.
 

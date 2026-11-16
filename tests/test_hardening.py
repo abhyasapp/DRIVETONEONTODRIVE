@@ -11,6 +11,8 @@ from pipeline import run_pipeline as rp
 from sync import apply_corrections as ac
 from sync import admin_apply
 from upload import upload_chapters_data as ucd
+from review import dashboard as dash
+from sync import sync_any_level as sal
 
 
 def _page(n, start):
@@ -139,6 +141,43 @@ class PipelinePolicyTests(unittest.TestCase):
         export = {s[0]: s for s in rp.STEPS}["export"]
         if os.getenv("EXPORT_STABLE_PARTS", "1") != "0":
             self.assertIn("--stable-parts", export[3])
+
+
+class SyncDeleteGuardTests(unittest.TestCase):
+    def test_small_removals_pass(self):
+        self.assertIsNone(sal.delete_guard_problem(2, 100, env={}))
+
+    def test_mass_removal_is_blocked_by_count_or_share(self):
+        self.assertIn("safety limit", sal.delete_guard_problem(30, 1000, env={}))
+        self.assertIn("safety limit", sal.delete_guard_problem(8, 50, env={}))
+
+    def test_explicit_override_and_nothing_deleted(self):
+        self.assertIsNone(sal.delete_guard_problem(500, 600, env={"SYNC_ALLOW_MASS_DELETE": "1"}))
+        self.assertIsNone(sal.delete_guard_problem(0, 0, env={}))
+
+    def test_limits_are_configurable(self):
+        env = {"SYNC_MAX_DELETE_FILES": "100", "SYNC_MAX_DELETE_PCT": "50"}
+        self.assertIsNone(sal.delete_guard_problem(40, 100, env=env))
+
+
+class DashboardGuardTests(unittest.TestCase):
+    def test_loopback_json_post_is_allowed(self):
+        h = {"Host": "127.0.0.1:8790", "Content-Type": "application/json",
+             "Origin": "http://127.0.0.1:8790"}
+        self.assertTrue(dash.request_allowed(h, post=True))
+        self.assertTrue(dash.request_allowed({"Host": "localhost:8790"}))
+
+    def test_rebinding_host_is_refused(self):
+        self.assertFalse(dash.request_allowed({"Host": "evil.example.com:8790"}))
+
+    def test_cross_site_and_form_posts_are_refused(self):
+        base = {"Host": "127.0.0.1:8790"}
+        self.assertFalse(dash.request_allowed(
+            {**base, "Content-Type": "text/plain", "Origin": "https://evil.example"}, post=True))
+        self.assertFalse(dash.request_allowed(
+            {**base, "Content-Type": "application/json", "Origin": "https://evil.example"}, post=True))
+        self.assertFalse(dash.request_allowed(
+            {**base, "Content-Type": "application/x-www-form-urlencoded"}, post=True))
 
 
 if __name__ == "__main__":

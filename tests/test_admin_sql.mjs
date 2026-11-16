@@ -727,6 +727,39 @@ try {
   await bad('single option is rejected', [String(live), 't', JSON.stringify(['A']), 0, '', 'i', 's', 1]);
   const still = (await rows('SELECT question_text FROM questions WHERE id=$1', [live]))[0];
   check('rejected calls leave the question untouched', still.question_text === 'Direct fix target, corrected', still);
+
+  // ---- undo ----
+  const a2 = (await rows('SELECT max(id) AS m FROM admin_corrections WHERE question_id=$1', [live]))[0].m;
+  let blocked = false;
+  const first = (await rows('SELECT min(id) AS m FROM admin_corrections WHERE question_id=$1', [live]))[0].m;
+  try { await rows('SELECT abhyas_revert_correction($1)', [first]); } catch { blocked = true; }
+  check('only the newest correction can be undone', blocked);
+  const undone = (await rows('SELECT abhyas_revert_correction($1, $2) AS r', [a2, 'tester']))[0].r;
+  check('undo succeeds', undone.ok === true, undone);
+  const back = (await rows('SELECT question_text, correct_index, identity_key FROM questions WHERE id=$1', [live]))[0];
+  check('undo restores text, answer and identity of the previous state',
+    back.question_text === 'Direct fix target, corrected' && back.correct_index === 2 && back.identity_key === ident, back);
+  let twice = false;
+  try { await rows('SELECT abhyas_revert_correction($1)', [a2]); } catch { twice = true; }
+  check('an undo cannot be repeated', twice);
+  const undoAlias = await rows('SELECT count(*)::int AS n FROM correction_source_aliases_v2 WHERE source_identity=$1', ['src-ident']);
+  check('undo keeps exactly the restored previous alias', undoAlias[0].n === 1, undoAlias);
+  const undoFirst = (await rows('SELECT abhyas_revert_correction($1) AS r', [first]))[0].r;
+  const orig = (await rows('SELECT question_text, correct_index, identity_key FROM questions WHERE id=$1', [live]))[0];
+  check('undoing the first correction returns the question to its original text',
+    undoFirst.ok === true && orig.question_text === 'Direct fix target' && orig.correct_index === 1 && orig.identity_key === 'old-ident', orig);
+  const noAlias = await rows('SELECT count(*)::int AS n FROM correction_source_aliases_v2 WHERE source_identity=$1', ['src-ident']);
+  check('undoing the first correction removes its source alias', noAlias[0].n === 0, noAlias);
+
+  // the console's "Recent corrections" query, taken verbatim from index.html
+  const html = readFileSync(path.join(root, 'index.html'), 'utf8');
+  const m = html.match(/SELECT id, question_id, stable_qn_id, created_at[\s\S]*?LIMIT 15/);
+  check('console history query is present in index.html', Boolean(m));
+  if (m) {
+    const hist = await rows(m[0]);
+    check('history query runs and flags nothing undoable once everything is undone',
+      hist.length >= 2 && hist.filter(r => r.undoable === true).length === 0, hist.map(r => [r.id, r.undoable]));
+  }
 } catch (error) {
   check('direct correction path', false, error.message);
 }

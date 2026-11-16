@@ -753,6 +753,14 @@ CREATE TABLE IF NOT EXISTS admin_corrections (
     source_recorded  boolean     NOT NULL DEFAULT false,
     created_at       timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE admin_corrections
+    ADD COLUMN IF NOT EXISTS before_identity_key text,
+    ADD COLUMN IF NOT EXISTS before_quality      real,
+    ADD COLUMN IF NOT EXISTS before_corrected_at timestamptz,
+    ADD COLUMN IF NOT EXISTS alias_id            bigint,
+    ADD COLUMN IF NOT EXISTS replaced_aliases    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS reverted_at         timestamptz,
+    ADD COLUMN IF NOT EXISTS reverted_by         text;
 CREATE INDEX IF NOT EXISTS idx_admin_corrections_question
     ON admin_corrections (question_id, created_at DESC);
 
@@ -834,6 +842,8 @@ DECLARE
     v_recorded boolean := false;
     v_now timestamptz := now();
     v_opt jsonb;
+    v_alias_id bigint;
+    v_replaced jsonb := '[]'::jsonb;
 BEGIN
     SELECT r.question_id, r.requested_id, r.hops
       INTO v_id, v_requested, v_hops
@@ -892,7 +902,14 @@ BEGIN
 
     IF p_record_source AND v_chapter_id IS NOT NULL
        AND coalesce(p_source_location, '') <> '' THEN
-        -- newer alias supersedes older ones for the same source question
+        -- newer alias supersedes older ones for the same source question;
+        -- the old rows are kept in the audit row so an undo can restore them
+        SELECT coalesce(jsonb_agg(to_jsonb(a)), '[]'::jsonb) INTO v_replaced
+          FROM correction_source_aliases_v2 a
+         WHERE a.chapter_id = v_chapter_id
+           AND a.source_identity = coalesce(v_old.source_identity, p_source_identity)
+           AND a.source_location = p_source_location
+           AND a.source_number = coalesce(p_source_number, '');
         DELETE FROM correction_source_aliases_v2
          WHERE chapter_id = v_chapter_id
            AND source_identity = coalesce(v_old.source_identity, p_source_identity)
@@ -906,7 +923,8 @@ BEGIN
                 p_source_location, coalesce(p_source_number, ''),
                 btrim(p_question), p_options, p_correct_index, v_correct_text,
                 coalesce(p_explanation, ''), p_identity_key,
-                coalesce(p_quality, 0), v_now);
+                coalesce(p_quality, 0), v_now)
+        RETURNING alias_id INTO v_alias_id;
         v_recorded := true;
     END IF;
 
@@ -918,7 +936,8 @@ BEGIN
 
     INSERT INTO admin_corrections
         (question_id, stable_qn_id, before_snapshot, after_snapshot, note,
-         actor, source_recorded)
+         actor, source_recorded, before_identity_key, before_quality,
+         before_corrected_at, alias_id, replaced_aliases)
     VALUES (v_id, v_old.stable_qn_id,
             jsonb_build_object('question_text', v_old.question_text,
                 'options', v_old.options, 'correct_index', v_old.correct_index,
@@ -926,10 +945,83 @@ BEGIN
             jsonb_build_object('question_text', btrim(p_question),
                 'options', p_options, 'correct_index', p_correct_index,
                 'explanation', coalesce(p_explanation, '')),
-            p_note, coalesce(p_actor, 'console'), v_recorded);
+            p_note, coalesce(p_actor, 'console'), v_recorded,
+            v_old.identity_key, v_old.quality_score, v_old.corrected_at,
+            v_alias_id, v_replaced);
 
     RETURN jsonb_build_object('ok', true, 'id', v_id,
+        'audit_id', (SELECT max(id) FROM admin_corrections WHERE question_id = v_id),
         'requested_id', v_requested, 'canonical_hops', v_hops,
         'stable_qn_id', v_old.stable_qn_id, 'source_recorded', v_recorded);
+END
+$fn$;
+
+-- Undo one admin correction. Only the NEWEST un-reverted correction of a
+-- question can be undone, and only while the question still holds exactly
+-- what that correction wrote (a later merge/edit blocks it instead of being
+-- silently overwritten).
+CREATE OR REPLACE FUNCTION abhyas_revert_correction(
+    p_audit_id bigint,
+    p_actor    text DEFAULT 'console'
+) RETURNS jsonb
+LANGUAGE plpgsql AS $fn$
+DECLARE
+    v_a admin_corrections%ROWTYPE;
+    v_q questions%ROWTYPE;
+    v_before jsonb;
+    v_after jsonb;
+BEGIN
+    SELECT * INTO v_a FROM admin_corrections WHERE id = p_audit_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'correction % not found', p_audit_id; END IF;
+    IF v_a.reverted_at IS NOT NULL THEN
+        RAISE EXCEPTION 'correction % was already undone', p_audit_id;
+    END IF;
+    IF EXISTS (SELECT 1 FROM admin_corrections n
+                WHERE n.question_id = v_a.question_id AND n.id > v_a.id
+                  AND n.reverted_at IS NULL) THEN
+        RAISE EXCEPTION 'a newer correction exists for this question - undo that one first';
+    END IF;
+
+    SELECT * INTO v_q FROM questions WHERE id = v_a.question_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'question % no longer exists', v_a.question_id; END IF;
+
+    v_before := v_a.before_snapshot;
+    v_after  := v_a.after_snapshot;
+    IF v_q.question_text IS DISTINCT FROM (v_after ->> 'question_text')
+       OR v_q.options IS DISTINCT FROM (v_after -> 'options')
+       OR v_q.correct_index IS DISTINCT FROM NULLIF(v_after ->> 'correct_index', '')::int THEN
+        RAISE EXCEPTION 'question % changed since this correction - not undoing', v_a.question_id;
+    END IF;
+
+    UPDATE questions SET
+        question_text = v_before ->> 'question_text',
+        options       = v_before -> 'options',
+        correct_index = NULLIF(v_before ->> 'correct_index', '')::int,
+        correct_text  = CASE WHEN NULLIF(v_before ->> 'correct_index', '') IS NULL THEN NULL
+                             ELSE (v_before -> 'options') ->> (v_before ->> 'correct_index')::int END,
+        explanation   = v_before ->> 'explanation',
+        identity_key  = coalesce(v_a.before_identity_key, identity_key),
+        quality_score = coalesce(v_a.before_quality, quality_score),
+        corrected_at  = v_a.before_corrected_at
+     WHERE id = v_a.question_id;
+
+    IF v_a.alias_id IS NOT NULL THEN
+        DELETE FROM correction_source_aliases_v2 WHERE alias_id = v_a.alias_id;
+    END IF;
+    IF jsonb_typeof(v_a.replaced_aliases) = 'array'
+       AND jsonb_array_length(v_a.replaced_aliases) > 0 THEN
+        INSERT INTO correction_source_aliases_v2
+        SELECT * FROM jsonb_populate_recordset(
+            null::correction_source_aliases_v2, v_a.replaced_aliases)
+        ON CONFLICT DO NOTHING;
+    END IF;
+
+    UPDATE admin_corrections SET reverted_at = now(), reverted_by = coalesce(p_actor, 'console')
+     WHERE id = v_a.id;
+    INSERT INTO applied_corrections (uid, corrected_at, matched_by, question_id, notes)
+    VALUES ('admin-undo:' || v_a.question_id::text, now(), 'admin_console_undo',
+            v_a.question_id, 'undo of audit ' || v_a.id::text);
+
+    RETURN jsonb_build_object('ok', true, 'id', v_a.question_id, 'audit_id', v_a.id);
 END
 $fn$;

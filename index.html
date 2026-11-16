@@ -269,6 +269,10 @@
         <button class="button primary" id="qnOpen">Open &amp; correct</button>
         <span class="status" id="qnStatus"></span>
       </div>
+      <details id="corrHistory" style="margin-bottom:14px">
+        <summary class="muted" style="cursor:pointer">Recent corrections (undo)</summary>
+        <div id="corrList" class="muted" style="margin-top:8px">Open to load.</div>
+      </details>
       <div class="row" style="margin-bottom:14px">
         <input class="grow" id="qSearch" type="text" placeholder="Search question text" aria-label="Search question text">
         <select id="qLevel" aria-label="Level"><option value="">All levels</option></select>
@@ -1533,6 +1537,46 @@
       status(target, error.message, 'bad');
     }
   }
+  async function loadCorrections() {
+    const target = $('#corrList');
+    if (!state.helpers) { target.textContent = 'Install or refresh the merge functions first (Overview tab).'; return; }
+    target.textContent = 'Loading…';
+    try {
+      const list = await sql(`
+        SELECT id, question_id, stable_qn_id, created_at, actor, reverted_at,
+               left(before_snapshot->>'question_text', 90) AS before_text,
+               left(after_snapshot->>'question_text', 90)  AS after_text,
+               (before_snapshot->>'correct_index') AS before_idx,
+               (after_snapshot->>'correct_index')  AS after_idx,
+               (id = max(id) FILTER (WHERE reverted_at IS NULL)
+                     OVER (PARTITION BY question_id)) AS undoable
+        FROM admin_corrections ORDER BY id DESC LIMIT 15`);
+      if (!list.length) { target.textContent = 'No admin corrections yet.'; return; }
+      target.innerHTML = list.map(row => `
+        <div style="border-top:1px solid var(--line,#ddd);padding:8px 0">
+          <div><b>#${num(row.question_id)}</b>${row.stable_qn_id ? ' · ' + esc(row.stable_qn_id) : ''}
+            · ${esc(new Date(row.created_at).toLocaleString())} · ${esc(row.actor || '')}
+            ${row.reverted_at ? ' · <i>undone</i>' : ''}</div>
+          <div>${esc(row.before_text)} <span class="muted">(answer ${esc(row.before_idx ?? '–')})</span>
+            → ${esc(row.after_text)} <span class="muted">(answer ${esc(row.after_idx ?? '–')})</span></div>
+          <button class="button ghost" data-undo="${num(row.id)}"
+            ${row.reverted_at || !(row.undoable === true || row.undoable === 't') ? 'disabled' : ''}>Undo</button>
+        </div>`).join('');
+      $$('#corrList [data-undo]').forEach(button => {
+        button.onclick = async () => {
+          if (!confirm('Undo this correction? The question returns to its previous text and answer.')) return;
+          button.disabled = true;
+          try {
+            await sqlOne('SELECT abhyas_revert_correction($1::bigint, $2) AS result', [num(button.dataset.undo), 'console']);
+            await loadCorrections();
+            loadQuestions(state.qOffset);
+          } catch (error) { target.insertAdjacentHTML('afterbegin', `<div class="status bad">${esc(error.message)}</div>`); button.disabled = false; }
+        };
+      });
+    } catch (error) { target.textContent = error.message; }
+  }
+  $('#corrHistory').addEventListener('toggle', event => { if (event.target.open) loadCorrections(); });
+
   $('#qnOpen').onclick = openByQnId;
   $('#qnLookup').addEventListener('keydown', event => { if (event.key === 'Enter') openByQnId(); });
 
