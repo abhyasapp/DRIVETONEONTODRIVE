@@ -30,7 +30,7 @@ import sys
 import time
 
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 
 OAUTH_CREDENTIALS_FILE = "oauth-credentials.json"
 TOKEN_FILE             = "oauth-token.pickle"
@@ -121,6 +121,26 @@ def parse_args():
     return p.parse_args()
 
 
+def _upload(drive, file_id=None):
+    """Upload LOCAL_FILE, replacing file_id in place (or creating it).
+
+    The file is opened and closed here. MediaFileUpload given a path keeps the
+    handle open for the life of the object, which on Windows stops anything
+    else from replacing or deleting that file (and leaks the descriptor).
+    """
+    with open(LOCAL_FILE, "rb") as fh:
+        media = MediaIoBaseUpload(fh, mimetype=MIME, resumable=False)
+        if file_id:
+            return _retry(lambda: drive.files().update(
+                fileId=file_id, body={"name": FNAME}, media_body=media,
+                fields="id", supportsAllDrives=True,
+            ).execute())
+        return _retry(lambda: drive.files().create(
+            body={"name": FNAME, "parents": [DRIVE_PARENT]},
+            media_body=media, fields="id", supportsAllDrives=True,
+        ).execute())
+
+
 def main():
     args = parse_args()
 
@@ -164,7 +184,6 @@ def main():
         ).execute()
 
     found = _retry(_search).get("files", [])
-    media = MediaFileUpload(LOCAL_FILE, mimetype=MIME, resumable=False)
 
     if found:
         keep = found[0]            # newest copy keeps serving; its id is stable
@@ -179,27 +198,10 @@ def main():
                   f"- id stays {fid}.")
             return
 
-        def _update():
-            return drive.files().update(
-                fileId=fid,
-                body={"name": FNAME},
-                media_body=media,
-                fields="id",
-                supportsAllDrives=True,
-            ).execute()
-
-        _retry(_update)
+        _upload(drive, fid)
         print(f"updated {FNAME} -> {fid}")
     else:
-        meta = {"name": FNAME, "parents": [DRIVE_PARENT]}
-
-        def _create():
-            return drive.files().create(
-                body=meta, media_body=media, fields="id",
-                supportsAllDrives=True,
-            ).execute()
-
-        new = _retry(_create)
+        new = _upload(drive)
         print(f"created {FNAME} -> {new['id']}  "
               f"(first upload; later runs update this id in place)")
 
