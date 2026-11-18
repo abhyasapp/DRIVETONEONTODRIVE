@@ -173,6 +173,37 @@ const afterReopen = (await rows(`SELECT status, resolved_at, resolved_by FROM re
 check('reopen clears the resolution', afterReopen.status === 'open'
   && afterReopen.resolved_at === null && afterReopen.resolved_by === null, afterReopen);
 
+/* ---- statements taken verbatim from index.html (no hand-kept copies) ---- */
+import { readFileSync } from 'node:fs';
+const html = readFileSync(path.join(root, 'index.html'), 'utf8');
+const grab = (re, label) => {
+  const m = html.match(re);
+  check(`index.html contains the ${label} statement`, Boolean(m));
+  return m ? m[0] : null;
+};
+const alter = grab(/ALTER TABLE reported_questions\s+ADD COLUMN IF NOT EXISTS backend_dirty[\s\S]*?correction_audit_id bigint/, 'report-columns');
+const summarySql = grab(/SELECT count\(\*\)::int AS total,[\s\S]*?FROM reported_questions/, 'summary');
+const listSql = grab(/SELECT rq\.id AS report_id[\s\S]*?LEFT JOIN questions q ON q\.id = rq\.qid/, 'report list');
+const setStatus = [...html.matchAll(/UPDATE reported_questions\s+SET status = \$1[\s\S]*?RETURNING id/g)].map(m => m[0]);
+check('resolve and reopen statements are both present', setStatus.length === 2, setStatus.length);
+
+if (alter && summarySql && listSql && setStatus.length === 2) {
+  await db.exec(alter);
+  await db.exec(alter);   // idempotent: the console runs it on every tab open
+  const live = (await rows(summarySql))[0];
+  check('console summary runs and reports nothing pending yet', live.total === 3 && live.pending === 0, live);
+  await rows(setStatus[0], ['resolved', 'console', 'rep-b']);
+  const pending = (await rows(summarySql))[0];
+  check('resolving from the console marks the report for push-back', pending.pending === 1, pending);
+  const listed = await rows(`${listSql} ORDER BY rq.reported_at DESC NULLS LAST, rq.id DESC LIMIT 25`);
+  const flagged = listed.filter(r => r.backend_dirty === true).map(r => r.report_id);
+  check('console list exposes backend_dirty for the sync-pending chip',
+    flagged.length === 1 && flagged[0] === 'rep-b', flagged);
+  await rows(setStatus[1], ['open', 'rep-b']);
+  const reopenedRow = (await rows(`SELECT backend_dirty FROM reported_questions WHERE id = 'rep-b'`))[0];
+  check('reopening also marks the report for push-back', reopenedRow.backend_dirty === true, reopenedRow);
+}
+
 if (failures.length) {
   console.error(`reported SQL FAILED (${failures.length} of ${checks} checks)`);
   failures.forEach(failure => console.error(`  - ${failure}`));

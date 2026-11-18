@@ -1,0 +1,108 @@
+name: Apply admin corrections
+
+# Started by the Apps Script `admincorrect` action (or by hand). Applies
+# corrections addressed by qn id to Neon, closes the reports about those
+# questions, republishes the affected JSON to Drive, and tells the Apps Script
+# backend which reports were closed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      corrections_json:
+        description: 'JSON list: [{"qn":"50011.110001","question":"...","options":["A","B"],"correctIndex":1,"explanation":"","note":""}]'
+        required: true
+      publish:
+        description: 'Also re-export and upload to Drive now (otherwise the next daily run publishes)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+# One group per run: queued corrections are never dropped in favour of a newer
+# one (a shared group keeps only the newest pending run).
+concurrency:
+  group: admin-corrections-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup-python-deps
+
+      - name: Validate secrets and write credential files
+        uses: ./.github/actions/write-credentials
+        with:
+          need: db,backend,drive_read,drive_write
+          database_url:           ${{ secrets.DATABASE_URL }}
+          apps_script_url:        ${{ secrets.ABHYAS_APPS_SCRIPT_URL }}
+          sync_key:               ${{ secrets.ABHYAS_SYNC_KEY }}
+          service_account_json:   ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          gdrive_oauth_token:     ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          oauth_token_pickle:     ${{ secrets.OAUTH_TOKEN_PICKLE }}
+          oauth_credentials_json: ${{ secrets.OAUTH_CREDENTIALS_JSON }}
+
+      # The daily pipeline rewrites the same Drive files. Do not overlap it.
+      - name: Wait for a running daily pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 120); do
+            running=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow daily_pipeline.yml \
+                        --status in_progress --json databaseId --jq 'length')
+            [ "${running:-0}" = "0" ] && exit 0
+            echo "daily pipeline is running; waiting ($i/120)..."
+            sleep 60
+          done
+          echo "::error::daily pipeline still running after 2 hours"; exit 1
+
+      - name: Apply corrections to Neon
+        env:
+          # passed as data through the environment, never interpolated into shell
+          ADMIN_CORRECTIONS_JSON: ${{ inputs.corrections_json }}
+        run: python -m sync.admin_apply --env ADMIN_CORRECTIONS_JSON --apply --out admin_result.json
+
+      - name: Re-export and upload
+        if: ${{ inputs.publish }}
+        env:
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+        run: python -m pipeline.run_pipeline --only qn_ids,export,upload,chapters,chapters_up
+
+      - name: Push report resolutions to the backend
+        if: ${{ always() }}
+        run: python -m sync.sync_reports --push-only || true
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          [ -f admin_result.json ] && python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("admin_result.json"))
+          print(f"**{d['ok']} applied, {d['rejected']} rejected**\n")
+          for r in d["results"]:
+              print(f"- {'OK' if r['ok'] else 'ERR'} `{r['qn']}` {r['note']}")
+          if d["reportsResolved"]:
+              print(f"\nReports closed: {', '.join(d['reportsResolved'])}")
+          PY
+          true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: admin-corrections-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Scrub credentials
+        if: always()
+        run: rm -f service-account.json oauth-credentials.json oauth-token.pickle .env admin_result.json

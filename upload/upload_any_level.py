@@ -91,6 +91,7 @@ _FILENAME_RE = re.compile(
 # OAuth / Drive client
 # ════════════════════════════════════════════════════════════════════════
 
+from utils.common import retry as _retry, sha256_of, md5_of, RETRYABLE_STATUSES  # noqa: F401
 from utils.drive_auth import drive_client  # shared OAuth (env JSON / pickle / interactive)
 
 
@@ -110,25 +111,7 @@ def thread_drive():
 # Retry
 # ════════════════════════════════════════════════════════════════════════
 
-RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
-
-def _retry(fn, max_attempts=5, base=1.0, cap=30.0):
-    last = None
-    for attempt in range(max_attempts):
-        try:
-            return fn()
-        except HttpError as e:
-            status = getattr(e.resp, "status", None)
-            last = e
-            if status not in RETRYABLE_STATUSES:
-                raise
-            if attempt == max_attempts - 1:
-                raise
-            delay = min(base * (2 ** attempt) + random.random(), cap)
-            time.sleep(delay)
-    if last:
-        raise last
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -234,14 +217,6 @@ def trash_drive_file(drive, file_id):
 # ════════════════════════════════════════════════════════════════════════
 # Local file parsing
 # ════════════════════════════════════════════════════════════════════════
-
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
 
 def parse_filename(fname):
     m = _FILENAME_RE.match(fname)

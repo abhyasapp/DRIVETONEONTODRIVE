@@ -1,7 +1,7 @@
 # Abhyas daily pipeline
 
-Drive -> Neon (sync) -> corrections -> dedupe -> keyword + Gemini classify ->
-export JSON -> upload to Drive -> chapters-data.js -> upload.
+Drive -> Neon (sync) -> corrections -> dedupe -> reports -> keyword + Gemini
+classify -> export JSON -> upload to Drive -> chapters-data.js -> upload.
 
 Corrections now carry a stable `qid`; `sync/apply_corrections.py` resolves that
 Neon question id first (following canonical reassignments) and only falls back
@@ -14,8 +14,12 @@ bounded per run (`--backlog-limit`, default 100) and respects `--level`.
 
 ```
 .github/workflows/daily_pipeline.yml   CI schedule + manual run
+.github/workflows/apply_admin_corrections.yml  qn-id corrections from the backend, applied + published
+.github/actions/                       shared setup (python deps, credential files) for both workflows
+apps_script/ AdminReports.gs (resolvereports, admincorrect) + the backend contract
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)
-sync/        sync_any_level, apply_corrections
+sync/        sync_any_level, apply_corrections, sync_reports, admin_apply
+utils/       db, drive_auth, backend (one client for the backend), common (retry, hashes), admin_sql (self-installing SQL functions)
 dedupe/      dedupe_exact (pipeline), near_candidates (fuzzy review queue),
              content_identity, merge_questions, source_aliases
              the old v4 CSV exporter lives in archive/dedupe_review.py
@@ -71,6 +75,8 @@ python -m pipeline.run_pipeline --dry-run
 python -m pipeline.run_pipeline --only export,upload
 python -m pipeline.run_pipeline --skip-gemini
 python -m unittest tests.test_corrections tests.test_apply_corrections_qid # qid + backlog retry checks
+python -m unittest tests.test_hardening tests.test_reports_sync           # guards, pagination, reports sync
+node tests/test_apps_script.mjs                                           # Apps Script module
 ```
 
 Correction-only runs:
@@ -131,6 +137,33 @@ headers and any cross-site or non-JSON POST (DNS-rebinding / CSRF protection).
 
 The corrected text reaches students at the next export. To publish sooner, run
 the workflow manually with `only` = `qn_ids,export,upload,chapters,chapters_up`.
+
+## Reported questions: one loop
+
+```
+app report -> backend -> [pipeline: reports step] -> Neon reported_questions
+                                  ^                        |
+   resolvereports (push-back) ----+---- close when the question is corrected
+```
+
+- `sync.sync_reports` (pipeline step `reports`, non-fatal, runs after dedupe)
+  pulls new and changed reports (a full re-read every 7 days catches status
+  changes the backend might not flag), closes every open report whose question
+  - or a duplicate merged into it - was corrected after the report was filed,
+  and pushes each resolution back so the app stops showing it as open.
+- A change made here (console Resolve/Reopen, a correction, an undo) is marked
+  `backend_dirty` and survives a pull until the backend acknowledges it.
+- Correcting from the console (Reported tab -> *Fix question*) closes the
+  report in the same transaction; *Undo* reopens exactly those reports.
+- The backend side is `apps_script/AdminReports.gs`; see `apps_script/README.md`.
+
+### Correct from the backend (no console)
+
+The backend's `admincorrect` action validates a qn-id correction and starts the
+*Apply admin corrections* workflow (`workflow_dispatch`), which runs
+`python -m sync.admin_apply`, re-exports and uploads, and pushes the closed
+reports back. The workflow waits for a running daily pipeline instead of
+overlapping it, and installs the SQL functions itself if they are missing.
 
 ## Safety limits (all overridable)
 

@@ -39,23 +39,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.11'
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup-python-deps
 
       - name: Smoke test (offline checks)
         run: |
           set -euo pipefail
           python tests/smoke.py
           python -m unittest tests.test_corrections tests.test_apply_corrections_qid tests.test_dedupe_logic tests.test_pipeline \
-            tests.test_keyword_match tests.test_export_ids tests.test_hardening
+            tests.test_keyword_match tests.test_export_ids tests.test_hardening tests.test_reports_sync
 
       # The console ships its own identity/keyword JS and its own SQL. Both are
       # checked against the Python and against Postgres here; until now no CI
@@ -72,96 +64,25 @@ jobs:
           npm install --no-save --ignore-scripts @electric-sql/pglite@0.5.16
           node tests/test_admin_sql.mjs
           node tests/test_reported_sql.mjs
+          node tests/test_apps_script.mjs
 
       # ----- credentials -------------------------------------------------
 
-      - name: Check required secrets exist
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          DATABASE_URL:                ${{ secrets.DATABASE_URL }}
-          ABHYAS_APPS_SCRIPT_URL:      ${{ secrets.ABHYAS_APPS_SCRIPT_URL }}
-          ABHYAS_SYNC_KEY:             ${{ secrets.ABHYAS_SYNC_KEY }}
-          GEMINI_API_KEY:              ${{ secrets.GEMINI_API_KEY }}
-          GDRIVE_OAUTH_TOKEN:          ${{ secrets.GDRIVE_OAUTH_TOKEN }}
-          OAUTH_TOKEN_PICKLE:          ${{ secrets.OAUTH_TOKEN_PICKLE }}
-        run: |
-          missing=0
-          for v in GOOGLE_SERVICE_ACCOUNT_JSON DATABASE_URL ABHYAS_APPS_SCRIPT_URL ABHYAS_SYNC_KEY GEMINI_API_KEY; do
-            if [ -z "${!v}" ]; then echo "::error::Secret $v is empty or not set"; missing=1; fi
-          done
-          if [ -z "$GDRIVE_OAUTH_TOKEN" ] && [ -z "$OAUTH_TOKEN_PICKLE" ]; then
-            echo "::error::Set GDRIVE_OAUTH_TOKEN (recommended, JSON) or OAUTH_TOKEN_PICKLE (base64)"
-            missing=1
-          fi
-          exit $missing
-
-      - name: Write service account file
-        env:
-          SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: |
-          printf '%s' "$SERVICE_ACCOUNT_JSON" > service-account.json
-          python -c "import json; d=json.load(open('service-account.json')); assert d.get('type')=='service_account' and d.get('private_key'), 'not a service-account key'; print('service-account.json OK:', d['client_email'])" \
-            || { echo "::error::GOOGLE_SERVICE_ACCOUNT_JSON is not valid service-account JSON (paste the whole file contents)"; exit 1; }
-
-      - name: Write OAuth files
-        env:
-          OAUTH_CREDENTIALS_B64: ${{ secrets.OAUTH_CREDENTIALS_JSON }}
-          OAUTH_TOKEN_B64:       ${{ secrets.OAUTH_TOKEN_PICKLE }}
-          GDRIVE_OAUTH_TOKEN:    ${{ secrets.GDRIVE_OAUTH_TOKEN }}
-        run: |
-          # Preferred: GDRIVE_OAUTH_TOKEN (JSON) is read straight from the env
-          # by the upload scripts - nothing to write here.
-          if [ -n "$GDRIVE_OAUTH_TOKEN" ]; then
-            python -c "import json,os; d=json.loads(os.environ['GDRIVE_OAUTH_TOKEN']); assert d.get('refresh_token'), 'no refresh_token'; print('GDRIVE_OAUTH_TOKEN JSON OK')" \
-              || { echo "::error::GDRIVE_OAUTH_TOKEN is not valid token JSON (run: python -m utils.extract_token)"; exit 1; }
-          fi
-          # Legacy fallback: base64 files.
-          if [ -n "$OAUTH_CREDENTIALS_B64" ]; then
-            printf '%s' "$OAUTH_CREDENTIALS_B64" | base64 -d > oauth-credentials.json \
-              || { echo "::error::OAUTH_CREDENTIALS_JSON is not valid base64 (use: base64 -w0 oauth-credentials.json)"; exit 1; }
-          fi
-          if [ -n "$OAUTH_TOKEN_B64" ]; then
-            printf '%s' "$OAUTH_TOKEN_B64" | base64 -d > oauth-token.pickle \
-              || { echo "::error::OAUTH_TOKEN_PICKLE is not valid base64 (use: base64 -w0 oauth-token.pickle)"; exit 1; }
-          fi
-
-      - name: Write .env
-        env:
-          DATABASE_URL:           ${{ secrets.DATABASE_URL }}
-          ABHYAS_APPS_SCRIPT_URL: ${{ secrets.ABHYAS_APPS_SCRIPT_URL }}
-          ABHYAS_SYNC_KEY:        ${{ secrets.ABHYAS_SYNC_KEY }}
-          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2:       ${{ secrets.GEMINI_API_KEY_2 }}
-          CEREBRAS_API_KEY:       ${{ secrets.CEREBRAS_API_KEY }}
-          OPENROUTER_API_KEY:     ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          python - <<'PY'
-          import os
-          keys = ["DATABASE_URL", "ABHYAS_APPS_SCRIPT_URL", "ABHYAS_SYNC_KEY",
-                  "GEMINI_API_KEY", "GEMINI_API_KEY_2",
-                  "CEREBRAS_API_KEY", "OPENROUTER_API_KEY"]
-          with open(".env", "w") as f:
-              for k in keys:
-                  v = os.environ.get(k, "").strip()   # drop stray newline/space from pasting
-                  if "\n" in v or "\r" in v:
-                      raise SystemExit(f"{k} contains a line break - re-paste it on ONE line")
-                  esc = v.replace("\\", "\\\\").replace('"', '\\"')
-                  f.write(f'{k}="{esc}"\n')
-                  print(f"{k}: {len(v)} chars")
-          PY
-
-      - name: Sanity check credentials
-        env:
-          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
-        run: |
-          set -e
-          test -s service-account.json && echo "service-account.json OK"
-          test -s .env                 && echo ".env OK"
-          if [ -n "$GDRIVE_OAUTH_TOKEN" ]; then
-            echo "Drive upload auth: GDRIVE_OAUTH_TOKEN"
-          else
-            test -s oauth-token.pickle && echo "Drive upload auth: oauth-token.pickle"
-          fi
+      - name: Validate secrets and write credential files
+        uses: ./.github/actions/write-credentials
+        with:
+          need: db,backend,drive_read,drive_write,gemini
+          database_url:           ${{ secrets.DATABASE_URL }}
+          apps_script_url:        ${{ secrets.ABHYAS_APPS_SCRIPT_URL }}
+          sync_key:               ${{ secrets.ABHYAS_SYNC_KEY }}
+          service_account_json:   ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          gdrive_oauth_token:     ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          oauth_token_pickle:     ${{ secrets.OAUTH_TOKEN_PICKLE }}
+          oauth_credentials_json: ${{ secrets.OAUTH_CREDENTIALS_JSON }}
+          gemini_api_key:         ${{ secrets.GEMINI_API_KEY }}
+          gemini_api_key_2:       ${{ secrets.GEMINI_API_KEY_2 }}
+          cerebras_api_key:       ${{ secrets.CEREBRAS_API_KEY }}
+          openrouter_api_key:     ${{ secrets.OPENROUTER_API_KEY }}
 
       # ----- pipeline ----------------------------------------------------
 

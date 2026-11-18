@@ -171,26 +171,9 @@ def fetch_corrections(since_ms, limit=500):
     return payload
 
 
+from utils.common import to_ms as _to_ms  # noqa: E402
+
 MAX_PAGES = 50
-
-
-def _to_ms(value):
-    """correctedAt may be epoch ms (int/str) or an ISO timestamp; return ms."""
-    if value is None:
-        return 0
-    if isinstance(value, (int, float)):
-        return int(value)
-    text = str(value).strip()
-    if text.isdigit():
-        return int(text)
-    from datetime import datetime, timezone
-    try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return 0
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
 
 
 def fetch_all_corrections(since_ms, limit=500, max_pages=MAX_PAGES):

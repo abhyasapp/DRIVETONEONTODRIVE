@@ -11,35 +11,23 @@ Usage:
     python audit_reports.py --since 0  # all reports
 """
 import argparse
-import json
-import os
-import sys
 
-import requests
 from dotenv import load_dotenv
 
+from utils import backend
 from utils.db import connect as db_connect
 
 load_dotenv()
 
-APPS_URL = os.getenv("ABHYAS_APPS_SCRIPT_URL")
-SYNC_KEY = os.getenv("ABHYAS_SYNC_KEY")
 FETCH_TIMEOUT = 90
 
 
 def fetch_reports(since_ms=0, limit=5000):
-    if not APPS_URL or not SYNC_KEY:
-        raise RuntimeError("ABHYAS_APPS_SCRIPT_URL / ABHYAS_SYNC_KEY not set")
-    body = json.dumps({"action": "syncreportssince", "key": SYNC_KEY,
-                       "since": since_ms, "limit": limit})
-    r = requests.post(APPS_URL, data=body,
-                      headers={"Content-Type": "text/plain"},
-                      timeout=FETCH_TIMEOUT)
-    r.raise_for_status()
-    payload = r.json()
-    if not payload.get("success"):
-        raise RuntimeError(payload.get("error") or "fetch failed")
-    return payload.get("reports", [])
+    try:
+        return backend.call("syncreportssince", timeout=FETCH_TIMEOUT,
+                            since=since_ms, limit=limit).get("reports", [])
+    except backend.BackendError as e:
+        raise RuntimeError(str(e))
 
 
 def neon_lookup(cur, qids):

@@ -1622,9 +1622,11 @@
       [String(id), text, JSON.stringify(options), correctIndex, explanation, newIdentity,
         sourceIdentity, quality, location, sourceNumber, 'console edit', 'console', recordSource]);
       const result = typeof applied.result === 'string' ? JSON.parse(applied.result) : applied.result;
+      const closedCount = Array.isArray(result.reports_resolved) ? result.reports_resolved.length : 0;
+      const closedNote = closedCount ? ` Closed ${closedCount} report${closedCount === 1 ? '' : 's'}.` : '';
       const warning = $('#editorCorrection').checked && !result.source_recorded
         ? ' The source correction was not recorded (no source file for this question).' : '';
-      status(target, `Saved #${result.id}${result.stable_qn_id ? ' (' + result.stable_qn_id + ')' : ''}. Live in the app after the next export.${warning}`, warning ? 'bad' : 'good');
+      status(target, `Saved #${result.id}${result.stable_qn_id ? ' (' + result.stable_qn_id + ')' : ''}. Live in the app after the next export.${closedNote}${warning}`, warning ? 'bad' : 'good');
       editor.close();
       if (editorReload) editorReload();
     } catch (error) {
@@ -1686,6 +1688,7 @@
   async function loadReportedSummary() {
     const target = $('#rCards');
     try {
+      await ensureReportColumns();
       const row = await sqlOne(`
         SELECT count(*)::int AS total,
                count(*) FILTER (WHERE status = 'resolved')::int AS resolved,
@@ -1693,7 +1696,8 @@
                count(*) FILTER (WHERE qid IS NULL)::int AS unlinked,
                count(*) FILTER (WHERE corrected)::int AS corrected,
                count(DISTINCT uid)::int AS reporters,
-               count(*) FILTER (WHERE reported_at >= now() - interval '7 days')::int AS week
+               count(*) FILTER (WHERE reported_at >= now() - interval '7 days')::int AS week,
+               count(*) FILTER (WHERE backend_dirty)::int AS pending
         FROM reported_questions`);
       const open = num(row.open);
       const unlinked = num(row.unlinked);
@@ -1704,7 +1708,8 @@
         card('No question link', fmt(unlinked), unlinked ? 'bad' : 'good'),
         card('Answer fixed after report', fmt(num(row.corrected))),
         card('Distinct reporters', fmt(num(row.reporters))),
-        card('Reported in last 7 days', fmt(num(row.week)))
+        card('Reported in last 7 days', fmt(num(row.week))),
+        card('Waiting to sync to the app', fmt(num(row.pending)), num(row.pending) ? 'alert' : 'good')
       ].join('');
     } catch (error) {
       target.innerHTML = `<div class="callout error">${esc(error.message)}</div>`;
@@ -1752,6 +1757,7 @@
       !r.qid ? '<span class="chip bad">no question link</span>'
         : (!live ? '<span class="chip bad">question deleted</span>' : ''),
       r.corrected ? '<span class="chip ok">answer fixed</span>' : '',
+      (r.backend_dirty === true || r.backend_dirty === 't') ? '<span class="chip warn" title="Resolved or reopened here; the pipeline tells the app on its next run">sync pending</span>' : '',
       mismatch ? '<span class="chip warn">user answer disagrees</span>' : ''
     ].join('');
     const answer = correct != null
@@ -1776,7 +1782,7 @@
       </div>
       <div class="rep-actions">
         <button class="button ghost tiny" data-toggle="${esc(id)}" aria-expanded="${expanded}" aria-controls="rDetail-${esc(id)}">${expanded ? 'Hide details' : 'Details'}</button>
-        ${live ? `<button class="button ghost tiny" data-edit="${esc(r.qid)}">Edit question</button>` : ''}
+        ${live ? `<button class="button ghost tiny" data-edit="${esc(r.qid)}" title="Edit the question; saving closes this report">Fix question</button>` : ''}
         ${isOpen ? `<button class="button tiny" data-resolve="${esc(id)}">Resolve</button>`
                  : `<button class="button ghost tiny" data-reopen="${esc(id)}">Reopen</button>`}
       </div>
@@ -1832,16 +1838,33 @@
     });
   }
 
+  // The pipeline's sync_reports step adds these on its first run; the console
+  // makes sure they exist too so this tab works on either side of that.
+  let reportColumnsReady = null;
+  function ensureReportColumns() {
+    if (!reportColumnsReady) {
+      reportColumnsReady = sqlOne(`ALTER TABLE reported_questions
+        ADD COLUMN IF NOT EXISTS backend_dirty boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS backend_synced_at timestamptz,
+        ADD COLUMN IF NOT EXISTS correction_audit_id bigint`).catch(error => {
+          reportColumnsReady = null; throw error; });
+    }
+    return reportColumnsReady;
+  }
+
   async function rSetStatus(id, next, button) {
     if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
     try {
+      await ensureReportColumns();
       if (next === 'resolved') {
         await sqlOne(`UPDATE reported_questions
-                      SET status = $1, resolved_at = now(), resolved_by = $2
+                      SET status = $1, resolved_at = now(), resolved_by = $2,
+                          backend_dirty = true
                       WHERE id = $3 RETURNING id`, ['resolved', 'console', id]);
       } else {
         await sqlOne(`UPDATE reported_questions
-                      SET status = $1, resolved_at = NULL, resolved_by = NULL
+                      SET status = $1, resolved_at = NULL, resolved_by = NULL,
+                          backend_dirty = true
                       WHERE id = $2 RETURNING id`, ['open', id]);
       }
       await loadReported(rOff);
@@ -1858,6 +1881,7 @@
     const target = $('#rList');
     target.innerHTML = '<div class="empty loading">Loading reports…</div>';
     try {
+      await ensureReportColumns();
       loadReportedSummary();
       await loadReportedFacets();
       if (token !== rToken) return;
@@ -1870,7 +1894,7 @@
         SELECT rq.id AS report_id, rq.uid, rq.qid, rq.file_id, rq.question_snapshot,
                rq.options_snapshot, rq.correct_index, rq.chosen_index, rq.reason,
                rq.note, rq.reported_by, rq.reported_at, rq.status, rq.resolved_at,
-               rq.resolved_by, rq.corrected, rq.section, rq.app_version,
+               rq.resolved_by, rq.corrected, rq.section, rq.app_version, rq.backend_dirty,
                q.id AS live_id, q.question_text, q.options,
                q.correct_index AS q_correct_index, q.corrected_at AS q_corrected_at
         FROM reported_questions rq

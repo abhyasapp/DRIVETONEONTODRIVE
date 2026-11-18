@@ -126,6 +126,12 @@ STEPS = [
     # v7 dedupe: no --no-near flag (removed in v7, run near-diff via --samples)
     ("dedupe",      "Exact dedupe (content identity, per chapter, v9)",
      "dedupe.dedupe_exact", ["--apply", "--quiet"],           900),
+    # Pull reports from the Apps Script backend, close those whose question was
+    # corrected (after dedupe, so merged duplicates resolve to the survivor),
+    # and push resolutions back so the app stops showing them as open.
+    # Non-fatal: a backend hiccup must not stop questions from publishing.
+    ("reports",     "Sync reported questions (pull, close, push back)",
+     "sync.sync_reports", [],                                 600),
     ("kw_l5",       "Keyword classify level5",
      "classify.classify_any_level", ["level5"],                  600),
     ("kw_l7",       "Keyword classify level7",
@@ -188,7 +194,7 @@ OPTIONAL_STEPS = set()   # step names that may be skipped if their script is abs
 ALL_STEP_NAMES = [s[0] for s in STEPS]
 
 # Which steps need which kind of credentials.
-DB_STEPS = {"sync", "corrections", "dedupe", "kw_l5", "kw_l7", "kw_gk",
+DB_STEPS = {"sync", "corrections", "dedupe", "reports", "kw_l5", "kw_l7", "kw_gk",
             "gemini", "qn_ids", "export", "chapters", "chapters_up"}
 DRIVE_STEPS = {"sync", "upload", "chapters_up"}
 

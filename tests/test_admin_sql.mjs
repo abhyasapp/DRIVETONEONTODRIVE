@@ -728,6 +728,40 @@ try {
   const still = (await rows('SELECT question_text FROM questions WHERE id=$1', [live]))[0];
   check('rejected calls leave the question untouched', still.question_text === 'Direct fix target, corrected', still);
 
+  // ---- reports are closed by the correction, and reopened by the undo ----
+  // separate questions, so the audit chain of `live` below stays untouched
+  const mk2 = async (text, qn) => (await rows(`INSERT INTO questions
+      (question_text, options, correct_index, correct_text, identity_key, source_identity, file_ref_id, stable_qn_id)
+      VALUES ($1, '["A","B","C"]'::jsonb, 1, 'B', 'old-ident-2', 'src-ident-2', 900, $2) RETURNING id`, [text, qn]))[0].id;
+  const rl = await mk2('Report target', '50011.110011');
+  const rm = await mk2('Report target duplicate', '50011.110012');
+  await db.query('UPDATE questions SET canonical_id = $1 WHERE id = $2', [rl, rm]);
+  await db.exec(`INSERT INTO reported_questions (id, qid, status, reported_at, reason) VALUES
+    ('rep-live',   ${rl},   'open', now() - interval '2 days', 'wrong answer'),
+    ('rep-merged', ${rm}, 'open', now() - interval '2 days', 'typo'),
+    ('rep-future', ${rl},   'open', now() + interval '1 day',  'filed after the fix'),
+    ('rep-done',   ${rl},   'resolved', now() - interval '3 days', 'already closed')`);
+  const withReports = (await apply(String(rl)))[0].r;
+  const closed = (withReports.reports_resolved || []).slice().sort();
+  check('a correction closes open reports for the question and its merged duplicates',
+    JSON.stringify(closed) === JSON.stringify(['rep-live', 'rep-merged']), withReports);
+  const repRows = await rows("SELECT id, status, corrected, backend_dirty, corrected_snapshot FROM reported_questions ORDER BY id");
+  const rep = Object.fromEntries(repRows.map(r => [r.id, r]));
+  check('closed reports are flagged for push-back with the corrected snapshot',
+    rep['rep-live'].status === 'resolved' && rep['rep-live'].corrected === true
+    && rep['rep-live'].backend_dirty === true && rep['rep-live'].corrected_snapshot.includes('Gamma'), rep['rep-live']);
+  check('reports filed after the correction and already-resolved ones are untouched',
+    rep['rep-future'].status === 'open' && rep['rep-done'].backend_dirty === false, [rep['rep-future'], rep['rep-done']]);
+  const reconciled = (await rows('SELECT abhyas_reconcile_reports(NULL) AS r'))[0].r;
+  check('global reconcile is idempotent once everything is closed', reconciled.length === 0, reconciled);
+  const lastAudit = (await rows('SELECT max(id) AS m FROM admin_corrections WHERE question_id=$1', [rl]))[0].m;
+  await rows('SELECT abhyas_revert_correction($1)', [lastAudit]);
+  const afterUndo = Object.fromEntries((await rows("SELECT id, status, backend_dirty FROM reported_questions")).map(r => [r.id, r]));
+  check('undo reopens exactly the reports that correction closed',
+    afterUndo['rep-live'].status === 'open' && afterUndo['rep-merged'].status === 'open'
+    && afterUndo['rep-done'].status === 'resolved' && afterUndo['rep-live'].backend_dirty === true, afterUndo);
+  await db.exec("DELETE FROM reported_questions");
+
   // ---- undo ----
   const a2 = (await rows('SELECT max(id) AS m FROM admin_corrections WHERE question_id=$1', [live]))[0].m;
   let blocked = false;
