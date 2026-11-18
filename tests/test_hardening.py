@@ -111,25 +111,18 @@ class ChaptersUploadTests(unittest.TestCase):
 
 
 class AdminApplyTests(unittest.TestCase):
-    def test_build_correction_carries_qid_and_before_state(self):
-        row = (42, "old?", ["a", "b"], 7, "n:3", None, "drv1", 5)
-        corr = admin_apply.build_correction(
-            row, {"question": "new?", "options": ["a", "b"], "correctIndex": 1}, "2026-01-01T00:00:00+00:00")
-        self.assertEqual(corr["qid"], "42")
-        self.assertEqual(corr["fileId"], "drv1")
-        self.assertEqual(corr["before"]["question"], "old?")
-        self.assertEqual(corr["after"]["correctIndex"], 1)
-
     def test_run_rejects_bad_items_without_touching_the_db(self):
         conn = mock.MagicMock()
-        with mock.patch.object(admin_apply, "ensure_schema"):
-            res = admin_apply.run([
-                {"qn": "", "question": "x", "options": ["a", "b"], "correctIndex": 0},
-                {"qn": "1", "question": "x", "options": ["a", "b"], "correctIndex": 5},
-                {"qn": "1", "question": " ", "options": ["a", "b"], "correctIndex": 0},
-            ], apply=False, conn=conn)
+        cur = conn.cursor.return_value
+        cur.fetchone.return_value = (True,)          # functions "installed"
+        res = admin_apply.run([
+            {"qn": "", "question": "x", "options": ["a", "b"], "correctIndex": 0},
+            {"qn": "1", "question": "x", "options": ["a", "b"], "correctIndex": 5},
+            {"qn": "1", "question": " ", "options": ["a", "b"], "correctIndex": 0},
+        ], apply=False, conn=conn)
         self.assertEqual([r[1] for r in res], [False, False, False])
         conn.rollback.assert_called_once()
+        self.assertFalse([c for c in cur.execute.call_args_list if "SAVEPOINT" in str(c)])
 
 
 class PipelinePolicyTests(unittest.TestCase):

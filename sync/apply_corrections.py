@@ -48,6 +48,10 @@ class BackendError(RuntimeError):
 
 
 def ensure_schema(cur, conn):
+    # sync_any_level normally adds this; applying a correction stamps it, so a
+    # correction run on its own (admin_apply) must not depend on a sync having
+    # happened first.
+    cur.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY, value TEXT

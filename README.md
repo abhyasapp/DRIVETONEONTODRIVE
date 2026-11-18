@@ -77,6 +77,7 @@ python -m pipeline.run_pipeline --skip-gemini
 python -m unittest tests.test_corrections tests.test_apply_corrections_qid # qid + backlog retry checks
 python -m unittest tests.test_hardening tests.test_reports_sync           # guards, pagination, reports sync
 node tests/test_apps_script.mjs                                           # Apps Script module
+TEST_DATABASE_URL=postgresql://u:pw@127.0.0.1/db python -m unittest tests.test_postgres_e2e   # real Postgres, local only (CI runs it in a service container)
 ```
 
 Correction-only runs:
@@ -111,8 +112,9 @@ instead, which keeps unchanged questions in the same file across runs.
 
 Three entry points, one behaviour: the question is rewritten, a source alias is
 stored so the next Drive sync cannot restore the old text, the event is logged
-in `applied_corrections`, and (console path) a before/after snapshot goes to
-`admin_corrections`. Both the numeric `questions.id` and the public qn id
+in `applied_corrections`, and a before/after snapshot goes to
+`admin_corrections` - on every path, because the console, the CLI and the
+backend-triggered workflow all call the same SQL function. Both the numeric `questions.id` and the public qn id
 (`50011.110001`, case-insensitive) work, and ids that were merged away resolve
 to the surviving question.
 
@@ -125,7 +127,9 @@ to the surviving question.
   `review/identity.js`. An app admin backend can call this over Neon's HTTP
   endpoint with a scoped role.
 - **CLI** — `python -m sync.admin_apply fixes.json [--apply]` (dry run by
-  default); the JSON format is documented in the script header.
+  default); the JSON format is documented in the script header. It calls the
+  same SQL function, so its corrections show up in *Recent corrections* and can
+  be undone from the console; an identical resubmission is a no-op.
 
 Every console correction can be undone from *Recent corrections (undo)*:
 `abhyas_revert_correction(audit_id)` restores the previous text, answer, identity

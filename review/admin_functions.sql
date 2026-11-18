@@ -844,7 +844,9 @@ BEGIN
         UPDATE reported_questions rq
            SET status = 'resolved', resolved_at = now(), resolved_by = p_actor,
                corrected = true, backend_dirty = true,
-               correction_audit_id = p_audit_id,
+               -- a re-close by the pipeline (stale backend answered 'open')
+               -- must not sever the link to the correction that first closed it
+               correction_audit_id = coalesce(p_audit_id, rq.correction_audit_id),
                corrected_snapshot = (
                    SELECT jsonb_build_object('question', q.question_text,
                           'options', q.options, 'correctIndex', q.correct_index,

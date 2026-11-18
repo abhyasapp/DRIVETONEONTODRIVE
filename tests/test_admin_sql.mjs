@@ -754,6 +754,14 @@ try {
     rep['rep-future'].status === 'open' && rep['rep-done'].backend_dirty === false, [rep['rep-future'], rep['rep-done']]);
   const reconciled = (await rows('SELECT abhyas_reconcile_reports(NULL) AS r'))[0].r;
   check('global reconcile is idempotent once everything is closed', reconciled.length === 0, reconciled);
+  // regression: a stale backend answers "open" after the push; the pipeline
+  // re-closes the report and must keep its link to the admin correction
+  await db.exec(`UPDATE reported_questions SET status='open', resolved_at=NULL, corrected=false,
+                   backend_dirty=false WHERE id='rep-live'`);
+  const reclosed = (await rows("SELECT abhyas_reconcile_reports(NULL, 'pipeline') AS r"))[0].r;
+  const link = (await rows("SELECT correction_audit_id FROM reported_questions WHERE id='rep-live'"))[0].correction_audit_id;
+  check('a pipeline re-close keeps the link to the admin correction',
+    reclosed.includes('rep-live') && link !== null, { reclosed, link });
   const lastAudit = (await rows('SELECT max(id) AS m FROM admin_corrections WHERE question_id=$1', [rl]))[0].m;
   await rows('SELECT abhyas_revert_correction($1)', [lastAudit]);
   const afterUndo = Object.fromEntries((await rows("SELECT id, status, backend_dirty FROM reported_questions")).map(r => [r.id, r]));

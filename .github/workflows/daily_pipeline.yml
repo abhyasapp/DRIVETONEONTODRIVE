@@ -27,6 +27,17 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    # Throwaway database for tests/test_postgres_e2e.py (real Postgres, never Neon)
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: abhyastest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -43,11 +54,14 @@ jobs:
         uses: ./.github/actions/setup-python-deps
 
       - name: Smoke test (offline checks)
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/abhyastest
         run: |
           set -euo pipefail
           python tests/smoke.py
           python -m unittest tests.test_corrections tests.test_apply_corrections_qid tests.test_dedupe_logic tests.test_pipeline \
-            tests.test_keyword_match tests.test_export_ids tests.test_hardening tests.test_reports_sync
+            tests.test_keyword_match tests.test_export_ids tests.test_hardening tests.test_reports_sync \
+            tests.test_postgres_e2e
 
       # The console ships its own identity/keyword JS and its own SQL. Both are
       # checked against the Python and against Postgres here; until now no CI
