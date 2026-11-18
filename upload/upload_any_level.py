@@ -569,7 +569,7 @@ def upload_level(cur, conn, level_key, level_label, workers, dry_run,
         })
 
     if not tasks:
-        parts = [f"0 to upload", f"{skipped} unchanged"]
+        parts = ["0 to upload", f"{skipped} unchanged"]
         if prune:
             parts.append(f"{prune_stats['trashed']} pruned")
             if prune_stats["failed"]:

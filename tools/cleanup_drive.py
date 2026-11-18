@@ -107,7 +107,7 @@ def main():
     live = live_file_ids(cur, level_keys)
     print(f"Live file IDs in DB (for {level_keys}): {len(live)}")
 
-    print(f"\nWalking ABHYAS_AUTO root ...")
+    print("\nWalking ABHYAS_AUTO root ...")
     tree = walk(d, DRIVE_PARENT)
     print(f"  folders: {len(tree['folders'])}")
     print(f"  files:   {len(tree['files'])}")

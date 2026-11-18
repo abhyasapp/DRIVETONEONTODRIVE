@@ -31,7 +31,7 @@ from dedupe.content_identity import (
     identity, legacy_identity, source_question_key, source_location_key,
     compute_quality_score,
 )
-from dedupe.merge_questions import ensure_merge_schema, merge_question_rows
+from dedupe.merge_questions import ensure_merge_schema
 from dedupe.source_aliases import ensure_correction_source_alias_schema
 
 load_dotenv()

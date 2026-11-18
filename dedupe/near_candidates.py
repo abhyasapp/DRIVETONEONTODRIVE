@@ -3,7 +3,7 @@
 import re
 from collections import Counter, defaultdict
 
-from psycopg2.extras import Json, execute_values
+from psycopg2.extras import execute_values
 from rapidfuzz import fuzz
 
 from dedupe.content_identity import STOPWORDS

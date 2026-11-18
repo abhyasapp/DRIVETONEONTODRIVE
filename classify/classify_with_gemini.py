@@ -930,14 +930,13 @@ def keyword_fallback(question_text, options, keyword_hints,
 
     best_code = None
     best_score = 0
-    best_hits = []
     tied = False
     for code, kws in keyword_hints.items():
         if valid_codes is not None and code not in valid_codes:
             continue
         score, hits = matched_keywords(q_norm, prepare_keywords(kws))
         if score > best_score:
-            best_code, best_score, best_hits = code, score, hits
+            best_code, best_score = code, score
             tied = False
         elif score and score == best_score:
             tied = True

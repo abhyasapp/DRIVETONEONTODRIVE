@@ -5,10 +5,6 @@ import hashlib
 import json
 import re
 import unicodedata
-from typing import Sequence
-
-from rapidfuzz import fuzz
-
 
 STOPWORDS = frozenset("""
 a an the

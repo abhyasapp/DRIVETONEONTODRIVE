@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 
-SKIP_DIRS = {".git", "archive", "logs", "__pycache__", "tests", "venv", ".venv"}
+SKIP_DIRS = {".git", "bootstrap", "logs", "__pycache__", "tests", "venv", ".venv"}
 LOCAL_PKGS = {d for d in os.listdir(ROOT)
               if os.path.isdir(d) and d not in SKIP_DIRS and not d.startswith(".")}
 PIP_FOR = {            # import root -> distribution name in requirements.txt

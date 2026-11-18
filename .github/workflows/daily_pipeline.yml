@@ -10,6 +10,10 @@ on:
         description: 'Run only these steps (comma-separated, e.g. export,upload). Empty = all.'
         required: false
         default: ''
+      from_step:
+        description: 'Resume from this step onward (e.g. export after a failed run). Empty = start at the beginning.'
+        required: false
+        default: ''
       skip_gemini:
         description: 'Skip the Gemini classify step'
         type: boolean
@@ -58,6 +62,8 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/abhyastest
         run: |
           set -euo pipefail
+          python -m pip install --quiet pyflakes
+          python -m pyflakes $(git ls-files '*.py' | grep -v '^bootstrap/')
           python tests/smoke.py
           python -m unittest tests.test_corrections tests.test_apply_corrections_qid tests.test_dedupe_logic tests.test_pipeline \
             tests.test_keyword_match tests.test_export_ids tests.test_hardening tests.test_reports_sync \
@@ -104,13 +110,22 @@ jobs:
         env:
           GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
           ONLY:               ${{ github.event.inputs.only }}
+          FROM_STEP:          ${{ github.event.inputs.from_step }}
           SKIP_GEMINI:        ${{ github.event.inputs.skip_gemini }}
         run: |
-          args=""
-          [ -n "$ONLY" ] && args="$args --only $ONLY"
-          [ "$SKIP_GEMINI" = "true" ] && args="$args --skip-gemini"
+          # Step names only: letters, digits, underscore, comma. Anything else
+          # would be passed to the command line as extra arguments.
+          for v in "$ONLY" "$FROM_STEP"; do
+            if [ -n "$v" ] && ! printf '%s' "$v" | grep -Eq '^[a-z0-9_,]+$'; then
+              echo "::error::invalid step list: $v"; exit 2
+            fi
+          done
+          args=()
+          [ -n "$ONLY" ] && args+=(--only "$ONLY")
+          [ -n "$FROM_STEP" ] && args+=(--from-step "$FROM_STEP")
+          [ "$SKIP_GEMINI" = "true" ] && args+=(--skip-gemini)
           # No --quiet: full logs make failures diagnosable.
-          python -m pipeline.run_pipeline $args
+          python -m pipeline.run_pipeline "${args[@]}"
 
       # ----- diagnostics -------------------------------------------------
 
@@ -124,6 +139,24 @@ jobs:
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
                       --search "Daily pipeline failed in:title" --json number --jq '.[0].number' || true)
           body="The scheduled run failed: $RUN_URL"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+      # Non-fatal steps (reports, keyword/Gemini classify) do not turn the run
+      # red; this makes sure a step that keeps failing is still noticed.
+      - name: Open an issue for non-fatal step problems
+        if: always() && github.event_name == 'schedule' && hashFiles('logs/warnings.txt') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Pipeline warnings: a non-fatal step needs attention"
+          body="$(printf 'Run: %s\n\n' "$RUN_URL"; cat logs/warnings.txt)"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                      --search "Pipeline warnings in:title" --json number --jq '.[0].number' || true)
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
           else

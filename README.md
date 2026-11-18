@@ -1,6 +1,6 @@
 # Abhyas daily pipeline
 
-Drive -> Neon (sync) -> corrections -> dedupe -> reports -> keyword + Gemini
+migrate -> Drive -> Neon (sync) -> corrections -> dedupe -> reports -> keyword + Gemini
 classify -> export JSON -> upload to Drive -> chapters-data.js -> upload.
 
 Corrections now carry a stable `qid`; `sync/apply_corrections.py` resolves that
@@ -19,10 +19,10 @@ bounded per run (`--backlog-limit`, default 100) and respects `--level`.
 apps_script/ AdminReports.gs (resolvereports, admincorrect) + the backend contract
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)
 sync/        sync_any_level, apply_corrections, sync_reports, admin_apply
-utils/       db, drive_auth, backend (one client for the backend), common (retry, hashes), admin_sql (self-installing SQL functions)
+utils/       migrate (versioned schema), db, drive_auth, backend (one client for the backend), common (retry, hashes), admin_sql (self-installing SQL functions)
 dedupe/      dedupe_exact (pipeline), near_candidates (fuzzy review queue),
              content_identity, merge_questions, source_aliases
-             the old v4 CSV exporter lives in archive/dedupe_review.py
+             the old v4 CSV exporter was removed (see git history)
              scope: duplicates are grouped per CHAPTER (same identity_key
              inside one chapter), never across chapters/levels.
              policy: every copy that agrees with a sibling is merged, even
@@ -57,12 +57,13 @@ utils/       db.py (Neon retry), drive_auth.py (OAuth), extract_token.py
 config/      settings.py (Drive parent, paths) + keyword JSONs
 review/      dashboard.py + duplicate_reviews.py  (local admin reviewer)
              index.html + admin_functions.sql + identity.js  (hosted console)
-tools/       cleanup_drive, boost_keywords   (manual helpers)
+tools/       cleanup_drive, near_duplicates.sql   (manual helpers)
 tests/       smoke.py + unittest suites        (offline, run in CI)
              node suites: identity parity (no deps), admin SQL, reported SQL
              (the SQL suites need PGlite: npm install --no-save @electric-sql/pglite)
              all of them run in CI before the pipeline starts
-archive/     one-off scripts, not used by the pipeline
+RUNBOOK.md   what to do when a run fails, how to re-run, routine care
+bootstrap/   one-time scripts for building a new database (not used by the pipeline)
 ```
 
 ## Run

@@ -13,6 +13,7 @@ from sync import admin_apply
 from upload import upload_chapters_data as ucd
 from review import dashboard as dash
 from sync import sync_any_level as sal
+from utils import migrate
 
 
 def _page(n, start):
@@ -184,6 +185,53 @@ class DashboardGuardTests(unittest.TestCase):
             {**base, "Content-Type": "application/json", "Origin": "https://evil.example"}, post=True))
         self.assertFalse(dash.request_allowed(
             {**base, "Content-Type": "application/x-www-form-urlencoded"}, post=True))
+
+
+class MigrationDiscoveryTests(unittest.TestCase):
+    def _dir(self, names):
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        for n in names:
+            open(os.path.join(d, n), "w").write("SELECT 1;")
+        return d
+
+    def test_only_numbered_sql_files_in_order(self):
+        d = self._dir(["010_b.sql", "002_a.sql", "README.md", "notes.sql", "1_bad.sql"])
+        self.assertEqual([v for v, _ in migrate.discover(d)], ["002", "010"])
+
+    def test_duplicate_numbers_are_refused(self):
+        d = self._dir(["001_a.sql", "001_b.sql"])
+        with self.assertRaises(SystemExit):
+            migrate.discover(d)
+
+    def test_repo_migrations_are_well_formed(self):
+        found = migrate.discover()
+        self.assertTrue(found and found[0][0] == "001")
+        for _v, path in found:
+            sql = open(path, encoding="utf-8").read().upper()
+            self.assertNotIn("\nBEGIN;", "\n" + sql, f"{path}: runner owns the transaction")
+            self.assertNotIn("\nCOMMIT;", "\n" + sql, f"{path}: runner owns the transaction")
+
+    def test_non_fatal_failures_are_surfaced_not_swallowed(self):
+        results = [("sync", True, 1.0, "ok"), ("reports", False, 2.0, "boom"),
+                   ("gemini", True, 0.0, "skipped (budget)"), ("kw_l5", True, 1.0, "ok")]
+        self.assertEqual([n for n, _ in rp.collect_warnings(results)], ["reports", "gemini"])
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        got = rp.write_warnings(results, log_dir=d)
+        self.assertEqual(len(got), 2)
+        text = open(os.path.join(d, "warnings.txt"), encoding="utf-8").read()
+        self.assertIn("`reports` failed: boom", text)
+        # a clean run removes the stale file so the workflow opens no issue
+        rp.write_warnings([("sync", True, 1.0, "ok")], log_dir=d)
+        self.assertFalse(os.path.exists(os.path.join(d, "warnings.txt")))
+
+    def test_a_failed_fatal_step_is_not_reported_as_a_warning(self):
+        self.assertEqual(rp.collect_warnings([("export", False, 1.0, "x")]), [])
+
+    def test_migrate_is_the_first_fatal_step(self):
+        self.assertEqual(rp.STEPS[0][0], "migrate")
+        self.assertIn("migrate", rp.FATAL_STEPS)
 
 
 if __name__ == "__main__":

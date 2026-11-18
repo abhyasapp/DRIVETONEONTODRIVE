@@ -48,8 +48,6 @@ class PostgresEndToEnd(unittest.TestCase):
         # fixtures
         cur.execute("INSERT INTO levels (id, name) VALUES (1,'level5') ON CONFLICT DO NOTHING") if False else None
         conn.commit()
-        cur.execute("select column_name from information_schema.columns where table_name='questions' order by ordinal_position")
-        print("questions cols:", [r[0] for r in cur.fetchall()])
 
         # ---- fixtures: one chapter/book/file, two questions (one merged into the other)
         cur.execute("INSERT INTO chapters (id, chapter_name, level_id) VALUES (1,'Hydraulics',1)")
@@ -152,6 +150,73 @@ class PostgresEndToEnd(unittest.TestCase):
         cur.execute("select count(*) from applied_corrections"); check("dry run changes nothing", cur.fetchone()[0]==before and res[0][1] is not None)
 
         cur.close()
+        conn.close()
+
+    def _fresh(self):
+        os.environ["DATABASE_URL"] = URL
+        from utils.db import connect
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        with open(SCHEMA, "r", encoding="utf-8") as fh:
+            cur.execute(fh.read())
+        conn.commit()
+        return conn, cur
+
+    def test_repo_migrations_apply_once(self):
+        from utils import migrate
+        conn, cur = self._fresh()
+        cur.execute("ALTER TABLE questions DROP COLUMN stable_qn_id")   # DB before the migration
+        conn.commit()
+        self.assertEqual(migrate.run(conn), ["001"])
+        self.assertEqual(migrate.run(conn), [])           # second run: nothing to do
+        cur.execute("SELECT count(*) FROM schema_migrations")
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("""SELECT count(*) FROM information_schema.columns
+                       WHERE table_name='questions' AND column_name='stable_qn_id'""")
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("""SELECT count(*) FROM pg_indexes WHERE tablename='questions'
+                       AND indexdef ILIKE '%UNIQUE%stable_qn_id%'""")
+        self.assertEqual(cur.fetchone()[0], 1)            # the UNIQUE constraint came with it
+        # a DB patched by hand before the runner existed must not break it
+        cur.execute("DELETE FROM schema_migrations")
+        conn.commit()
+        self.assertEqual(migrate.run(conn), ["001"])
+        conn.close()
+
+    def test_failed_migration_rolls_back_and_edits_are_detected(self):
+        import shutil
+        import tempfile
+        from utils import migrate
+        conn, cur = self._fresh()
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+
+        def write(name, sql):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write(sql)
+
+        def exists(table):
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", (table,))
+            return cur.fetchone()[0]
+
+        write("001_ok.sql", "CREATE TABLE mig_a (id int);")
+        write("002_bad.sql", "CREATE TABLE mig_b (id int); SELECT 1/0;")
+        with self.assertRaises(Exception):
+            migrate.run(conn, d)
+        self.assertTrue(exists("mig_a"))                  # 001 committed on its own
+        self.assertFalse(exists("mig_b"))                 # 002 left no trace
+        cur.execute("SELECT version FROM schema_migrations ORDER BY version")
+        self.assertEqual([r[0] for r in cur.fetchall()], ["001"])
+
+        write("002_bad.sql", "CREATE TABLE mig_b (id int);")   # fixed before it was recorded
+        self.assertEqual(migrate.run(conn, d), ["002"])
+        self.assertTrue(exists("mig_b"))
+
+        write("001_ok.sql", "CREATE TABLE mig_a (id int); -- edited later")
+        applied, pending, changed = migrate.status(conn, d)
+        self.assertEqual((applied, pending, changed), (["001", "002"], [], ["001"]))
+        self.assertEqual(migrate.run(conn, d), [])        # reported, never re-run
         conn.close()
 
 

@@ -121,6 +121,10 @@ PIPELINE_BUDGET = _env_int("PIPELINE_BUDGET_SECONDS", 0)
 BUDGET_RESERVE_AFTER_GEMINI = 1500   # qn_ids + export + upload + chapters
 
 STEPS = [
+    # Versioned schema changes (migrations/NNN_*.sql), applied once each.
+    # Fatal: every later step assumes the schema is current.
+    ("migrate",     "Apply schema migrations",
+     "utils.migrate", [],                                       120),
     ("sync",        "Sync from Drive",
      "sync.sync_any_level", ["all"],                        1800),
     ("corrections", "Apply corrections to Neon",
@@ -179,7 +183,7 @@ PARALLEL_PREFIX = "kw_"
 #     index that points at old parts while the parts themselves moved on.
 # Add "sync" here if you want a Drive outage to red the run (arguably
 # correct: with sync failed, the pipeline re-exports stale Neon data).
-FATAL_STEPS = {"sync", "corrections", "dedupe", "export", "upload",
+FATAL_STEPS = {"migrate", "sync", "corrections", "dedupe", "export", "upload",
                "chapters", "chapters_up"}
 
 # A failed sync is worth one retry before the run stops; corrections retries
@@ -196,7 +200,7 @@ OPTIONAL_STEPS = set()   # step names that may be skipped if their script is abs
 ALL_STEP_NAMES = [s[0] for s in STEPS]
 
 # Which steps need which kind of credentials.
-DB_STEPS = {"sync", "corrections", "dedupe", "reports", "kw_l5", "kw_l7", "kw_gk",
+DB_STEPS = {"migrate", "sync", "corrections", "dedupe", "reports", "kw_l5", "kw_l7", "kw_gk",
             "gemini", "qn_ids", "export", "chapters", "chapters_up"}
 DRIVE_STEPS = {"sync", "upload", "chapters_up"}
 
@@ -642,6 +646,40 @@ def run_parallel(group, fh, quiet):
     return results
 
 
+def collect_warnings(results):
+    """Steps that did not stop the run but did not do their job either."""
+    out = []
+    for name, ok, _elapsed, note in results:
+        if name in FATAL_STEPS:
+            continue
+        if not ok:
+            out.append((name, f"failed: {note}"))
+        elif "budget" in str(note):
+            out.append((name, f"skipped, {note}"))
+    return out
+
+
+def write_warnings(results, log_dir=None):
+    """Non-fatal problems must not decay silently: put them on the run page as
+    annotations and in logs/warnings.txt, which the workflow turns into an
+    issue. Returns the warnings (empty list leaves no file behind)."""
+    warnings = collect_warnings(results)
+    path = os.path.join(log_dir or LOG_DIR, "warnings.txt")
+    if not warnings:
+        if os.path.exists(path):
+            os.remove(path)
+        return warnings
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        for name, text in warnings:
+            fh.write(f"- `{name}` {text}\n")
+    if os.getenv("GITHUB_ACTIONS"):
+        for name, text in warnings:
+            one_line = " ".join(str(text).split())[:300]
+            print(f"::warning title=Pipeline step {name}::{one_line}")
+    return warnings
+
+
 def write_ci_summary(results, aborted):
     """Render the run in GitHub Actions without another dependency."""
     path = os.getenv("GITHUB_STEP_SUMMARY")
@@ -842,6 +880,7 @@ def main():
         log(fh, "=" * 66)
 
     write_ci_summary(results, aborted)
+    write_warnings(results)
 
     # Non-zero exit so CI (GitHub Actions / Task Scheduler) notices failures.
     # Only failures in FATAL_STEPS turn the run red. Non-fatal failures
