@@ -41,9 +41,11 @@ Rules:
 * File scope `F` follows the exported file order used by
   `export_any_level.py`. Mixed-question exported parts are included when the
   question is classified into the mixedqn subtopic.
-* If the assignment would create a duplicate public id, the step aborts the
-  whole level with an error instead of silently overwriting a different
-  question's public id. That makes collisions visible rather than hidden.
+* A question that already owns a public id keeps it. A newcomer whose computed
+  sequence is already held by a different question takes the next free sequence
+  in the same chapter/subtopic/file block, so one layout change cannot leave a
+  whole level without ids. Only an identity whose own id is held by a different
+  identity aborts the run, instead of silently overwriting it.
 
 Public id scheme summary (for code review):
 * Level token:
@@ -342,6 +344,89 @@ def public_id_holders(cur, pub: str) -> List[int]:
 # Main assignment for one level.
 # ---------------------------------------------------------------------------
 
+MAX_SEQ_SCAN = 200
+
+
+def plan_assignments(level_key, rows, scope_map, owners):
+    """Decide every public id for one level in memory; no database access.
+
+    Ids are immutable and first claim wins. The trailing sequence encodes where a
+    question sits in the export layout, so when a layout change moves a question
+    onto a slot another question already owns, the newcomer takes the next free
+    sequence in the same chapter/subtopic/file block. Aborting the whole run - as
+    this used to do - left every other question without an id for the day.
+    """
+    groups = {}
+    for row in rows:
+        gk = identity_group_key(row)
+        if not gk:
+            continue
+        groups.setdefault(gk, []).append(row)
+
+    pending = []
+    assigned = reused = skipped = 0
+
+    # Deterministic and fair: the oldest internal id decides who keeps a
+    # contended slot, so repeated runs allocate the same sequence every time.
+    for gk, group in sorted(groups.items(), key=lambda kv: min(r[4] for r in kv[1])):
+        exportable = [r for r in group if (r[4], r[1], r[2]) in scope_map]
+        keeper = best_keeper(exportable or group)
+        if keeper is None:
+            skipped += 1
+            continue
+
+        keeper_id = keeper[4]
+        existing_pub = keeper[14] or next((r[14] for r in group if r[14]), "")
+        file_scope, seq = resolve_export_scope(keeper, scope_map)
+        if file_scope is None or seq is None:
+            skipped += 1
+            continue
+
+        if existing_pub:
+            candidate = existing_pub
+            reused += 1
+            # An identity's own id may never be held by a different identity.
+            owner_id = owners.get(candidate)
+            if owner_id is not None and owner_id != keeper_id                     and not any(r[4] == owner_id for r in group):
+                raise RuntimeError(
+                    f"Assignment collision for level {level_key}: public id "
+                    f"{candidate} is owned by question id {owner_id}, but the "
+                    f"current keeper is question id {keeper_id} with group key "
+                    f"{gk}. Fix the classified set or existing public ids before re-running."
+                )
+        else:
+            assigned += 1
+            candidate = ""
+            blocked_by = owners.get(stable_qn_id_from_parts(
+                level_key, keeper[1], keeper[2], file_scope, seq))
+            for step in range(MAX_SEQ_SCAN):
+                probe = stable_qn_id_from_parts(
+                    level_key, keeper[1], keeper[2], file_scope, seq + step
+                )
+                holder = owners.get(probe)
+                if holder is None or holder == keeper_id:
+                    candidate = probe
+                    if step:
+                        print(
+                            f"  [{level_key}] sequence {seq} of file {file_scope} "
+                            f"belongs to question id {blocked_by}; question id {keeper_id} "
+                            f"takes sequence {seq + step} ({probe})",
+                            flush=True,
+                        )
+                    break
+            if not candidate:
+                raise RuntimeError(
+                    f"Assignment collision for level {level_key}: no free sequence in "
+                    f"file {file_scope} of chapter {keeper[1]} subtopic {keeper[2]} for "
+                    f"question id {keeper_id} (group key {gk})."
+                )
+
+        owners[candidate] = keeper_id
+        pending.append((keeper_id, candidate))
+
+    return pending, assigned, reused, skipped
+
+
 def assign_for_level(conn, level_key: str) -> Tuple[int, int, int, int]:
     """
     Assign/keep stable_qn_id for one level.
@@ -355,66 +440,8 @@ def assign_for_level(conn, level_key: str) -> Tuple[int, int, int, int]:
     owners = load_public_id_owners(cur)
     print(f"  [{level_key}] {len(owners)} public ids already assigned", flush=True)
 
-    groups: Dict[str, List[Tuple[Any, ...]]] = {}
-    for row in rows:
-        gk = identity_group_key(row)
-        if not gk:
-            continue
-        groups.setdefault(gk, []).append(row)
-
-    assigned = reused = skipped = rejected = 0
-
-    # Pass 1: decide every public id in memory so collisions abort before any
-    # write, then pass 2 writes them as batched UPDATE statements (one round
-    # trip per batch instead of one per question).
-    pending: List[Tuple[int, str]] = []
-
-    for gk, group in groups.items():
-        # Prefer a keeper row that is actually laid out in the export, so the
-        # public id's chapter/subtopic always matches the position it encodes.
-        exportable = [r for r in group if (r[4], r[1], r[2]) in scope_map]
-        keeper = best_keeper(exportable or group)
-        if keeper is None:
-            skipped += 1
-            continue
-
-        keeper_id = keeper[4]
-
-        # A corrected-option revision of the same question keeps the identity's
-        # existing public id, even when the keeper itself has none yet.
-        existing_pub = keeper[14] or next((r[14] for r in group if r[14]), "")
-
-        # Resolve where it lives in the export layout.
-        file_scope, seq = resolve_export_scope(keeper, scope_map)
-
-        if file_scope is None or seq is None:
-            skipped += 1
-            continue
-
-        if existing_pub:
-            candidate = existing_pub
-            reused += 1
-        else:
-            candidate = stable_qn_id_from_parts(
-                level_key, keeper[1], keeper[2], file_scope, seq
-            )
-            assigned += 1
-
-        # Collision guard. Same question identity may share a public id; a
-        # different identity may not, so stop instead of overwriting.
-        owner_id = owners.get(candidate)
-        if owner_id is not None and owner_id != keeper_id:
-            if not any(r[4] == owner_id for r in group):
-                rejected += 1
-                raise RuntimeError(
-                    f"Assignment collision for level {level_key}: public id "
-                    f"{candidate} is owned by question id {owner_id}, but the "
-                    f"current keeper is question id {keeper_id} with group key "
-                    f"{gk}. Fix the classified set or existing public ids before re-running."
-                )
-
-        owners[candidate] = keeper_id
-        pending.append((keeper_id, candidate))
+    pending, assigned, reused, skipped = plan_assignments(level_key, rows, scope_map, owners)
+    rejected = 0
 
     # Only the keeper (the row that is actually exported) carries the public id.
     # `stable_qn_id` is UNIQUE, so the other copies of the same identity stay
