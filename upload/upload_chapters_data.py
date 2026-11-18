@@ -23,13 +23,9 @@ Usage:
 """
 
 import argparse
-import hashlib
 import os
-import random
 import sys
-import time
 
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 OAUTH_CREDENTIALS_FILE = "oauth-credentials.json"
@@ -47,7 +43,7 @@ MIME         = "application/javascript"
 # OAUTH
 # ============================================================================
 
-from utils.common import retry as _retry, sha256_of, md5_of, RETRYABLE_STATUSES  # noqa: F401
+from utils.common import retry as _retry, sha256_of, md5_of
 from utils.drive_auth import drive_client as client  # shared OAuth
 
 

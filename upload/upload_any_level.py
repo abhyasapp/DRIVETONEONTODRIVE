@@ -39,10 +39,8 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import os
-import random
 import re
 import sys
 import threading
@@ -91,7 +89,7 @@ _FILENAME_RE = re.compile(
 # OAuth / Drive client
 # ════════════════════════════════════════════════════════════════════════
 
-from utils.common import retry as _retry, sha256_of, md5_of, RETRYABLE_STATUSES  # noqa: F401
+from utils.common import retry as _retry, sha256_of
 from utils.drive_auth import drive_client  # shared OAuth (env JSON / pickle / interactive)
 
 
