@@ -106,11 +106,13 @@ def _env_int(name, default):
 # (export / upload / chapters) still get to run.
 GEMINI_TIMEOUT = _env_int("GEMINI_STEP_TIMEOUT", 28800)
 
-# Parts are assigned by a hash of the question id, so deleting or adding one
-# question no longer shifts every later part (and re-uploads them all).
-# EXPORT_STABLE_PARTS=0 restores sequential 50/50/37 splitting.
-EXPORT_EXTRA = ([] if os.getenv("EXPORT_STABLE_PARTS", "1") == "0"
-                else ["--stable-parts"])
+# Default layout: every subtopic is cut into files of MAX_PER_FILE (50)
+# questions in order and the LAST file takes the remainder (137 -> 50/50/37).
+# EXPORT_STABLE_PARTS=1 switches to hash-assigned parts, which keep a question
+# in the same file across runs but are UNEVEN and can exceed 50 per file
+# (100 questions -> 45/55), so it is opt-in.
+EXPORT_EXTRA = (["--stable-parts"] if os.getenv("EXPORT_STABLE_PARTS", "0") == "1"
+                else [])
 
 # Optional wall-clock budget for the whole run (seconds). In CI set it a bit
 # below the job timeout: the elastic Gemini step is then shortened so that
@@ -149,7 +151,7 @@ STEPS = [
     # last manual run had no public id, so the export carried public_qn: null.
     ("qn_ids",      "Assign stable public qn ids",
      "export.assign_stable_qn_ids", [],                        600),
-    ("export",      "Export to JSON (stable parts)",
+    ("export",      "Export to JSON (50 per file, remainder last)",
      "export.export_any_level", ["all"] + EXPORT_EXTRA,        900),
     ("upload",      "Upload JSON to Drive",
      "upload.upload_any_level", ["all", "--workers", "6"],    1800),

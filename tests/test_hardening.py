@@ -130,10 +130,23 @@ class PipelinePolicyTests(unittest.TestCase):
         self.assertIn("chapters", rp.FATAL_STEPS)
         self.assertIn("chapters_up", rp.FATAL_STEPS)
 
-    def test_export_uses_stable_parts_by_default(self):
+    def test_export_keeps_the_50_per_file_layout_by_default(self):
         export = {s[0]: s for s in rp.STEPS}["export"]
-        if os.getenv("EXPORT_STABLE_PARTS", "1") != "0":
-            self.assertIn("--stable-parts", export[3])
+        if os.getenv("EXPORT_STABLE_PARTS", "0") != "1":
+            self.assertNotIn("--stable-parts", export[3])
+
+    def test_sequential_parts_are_50_with_the_remainder_last(self):
+        from export.export_any_level import MAX_PER_FILE, partition_items
+        self.assertEqual(MAX_PER_FILE, 50)
+        sizes = lambda n: [len(p) for p in partition_items([(i,) for i in range(n)], 50)]
+        self.assertEqual(sizes(137), [50, 50, 37])
+        self.assertEqual(sizes(100), [50, 50])
+        self.assertEqual(sizes(51), [50, 1])
+        self.assertEqual(sizes(37), [37])
+        self.assertEqual(sizes(0), [])
+        for n in range(1, 400):
+            parts = sizes(n)
+            self.assertTrue(all(p == 50 for p in parts[:-1]) and 1 <= parts[-1] <= 50, (n, parts))
 
 
 class SyncDeleteGuardTests(unittest.TestCase):

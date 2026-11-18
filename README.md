@@ -177,7 +177,7 @@ overlapping it, and installs the SQL functions itself if they are missing.
 | Dedupe refuses an unusually large merge | >500 merges or >5% of live questions (exit 3) | `DEDUPE_ALLOW_LARGE=1`, `DEDUPE_MAX_MERGES`, `DEDUPE_MAX_MERGE_PCT` |
 | Corrections fetch is paginated; watermark never passes unread items | 500/page, 50 pages | - |
 | One failing correction stays in `correction_backlog` and no longer blocks the run | - | `CORRECTIONS_STRICT=1` |
-| Export parts assigned by hashed id (stable files across runs) | on | `EXPORT_STABLE_PARTS=0` |
+| Export layout: files of 50 questions per subtopic, remainder in the last file | on | `EXPORT_STABLE_PARTS=1` switches to hash-assigned parts (uneven, can exceed 50) |
 | Gemini shortened to fit the run budget | `PIPELINE_BUDGET_SECONDS=9900` in CI | - |
 | `chapters-data.js` validated, written atomically, uploaded in place (same Drive id) | - | - |
 
