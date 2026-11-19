@@ -3,10 +3,15 @@
 The pipeline talks to one backend URL (`ABHYAS_APPS_SCRIPT_URL`) with a JSON
 POST `{"action": ..., "key": SYNC_KEY, ...}`. Today it uses `syncreportssince`
 and `syncCorrectionsSince`. This version adds two more actions. The backend is
-not part of this repo, so `AdminReports.gs` is a ready-made drop-in for the
-Google Apps Script deployment; if your live backend is the Supabase Edge
-Function (see SECRETS.md), implement the same two actions there - the contract
-below is all the pipeline depends on.
+not part of this repo. Both backends now implement these actions themselves:
+
+- Supabase Edge Function: `handlers/pipeline.ts` (`resolvereports`,
+  `admincorrect`, `syncreportssince`).
+- Apps Script: `gas/admin-reports.gs`. Deploy that file.
+
+`AdminReports.gs` here is a reference copy kept for the pipeline's own contract
+test; it is not the file to publish. The contract below is all the pipeline
+depends on.
 
 ## Contract
 
@@ -40,7 +45,8 @@ question id.
 
 ## Install (Apps Script)
 
-1. Add `AdminReports.gs` to the Apps Script project.
+1. Add `gas/admin-reports.gs` **from the backend repo** to the Apps Script project
+   (`apps_script/AdminReports.gs` here is a reference copy of the same module).
 2. In your existing `doPost`, right after parsing the request body:
    ```js
    var handled = adminReportsRoute_(req);

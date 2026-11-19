@@ -1,6 +1,13 @@
 /**
  * AdminReports.gs - drop-in module for the Abhyas Apps Script web app.
  *
+ * REFERENCE COPY. The canonical, fuller version (resolvereports, admincorrect,
+ * syncreportssince with a stamped cursor, qid validation) now ships with the
+ * backend: `abhyasapp/backend` -> `gas/admin-reports.gs`, documented in
+ * `docs/PIPELINE-CONTRACT.md` there. Deploy that file; this one is kept because
+ * tests/test_apps_script.mjs pins the pipeline's side of the contract against
+ * it. Keep the two in step when the contract changes.
+ *
  * Adds two POST actions next to the existing syncreportssince /
  * syncCorrectionsSince ones:
  *

@@ -31,7 +31,7 @@ issue with the link.
 | `upload` / `chapters_up` auth errors | Drive OAuth token expired or revoked | regenerate with `python -m utils.extract_token`, update `GDRIVE_OAUTH_TOKEN`; make sure the OAuth consent screen is **In production** (testing mode expires tokens after 7 days) |
 | `chapters_up` log says `created` again | the folder lookup found nothing | check the Drive parent is the right folder and the OAuth account can see the file; expected only on the very first upload |
 | `WARNING: N copies of chapters-data.js` | duplicate files from earlier runs | the newest is updated in place; point the app at that id, then `python -m tools.cleanup_drive` |
-| `reports` warns `no 'resolvereports' action yet` | backend not updated | deploy `apps_script/AdminReports.gs` (see `apps_script/README.md`); pending changes just wait |
+| `reports` warns `no 'resolvereports' action yet` | backend not updated | deploy the current backend (`gas/admin-reports.gs`, or `handlers/pipeline.ts` on Supabase) and publish a new version; pending changes just wait |
 | `gemini` skipped `(budget)` | the run was too long for Gemini to start | it runs next time; or run it alone: `--only gemini` |
 
 ## Re-running part of the pipeline

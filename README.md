@@ -16,7 +16,7 @@ bounded per run (`--backlog-limit`, default 100) and respects `--level`.
 .github/workflows/daily_pipeline.yml   CI schedule + manual run
 .github/workflows/apply_admin_corrections.yml  qn-id corrections from the backend, applied + published
 .github/actions/                       shared setup (python deps, credential files) for both workflows
-apps_script/ AdminReports.gs (resolvereports, admincorrect) + the backend contract
+apps_script/ reference copy of the backend's admin-reports module + the contract
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)
 sync/        sync_any_level, apply_corrections, sync_reports, admin_apply
 utils/       migrate (versioned schema), db, drive_auth, backend (one client for the backend), common (retry, hashes), admin_sql (self-installing SQL functions)
@@ -160,7 +160,8 @@ app report -> backend -> [pipeline: reports step] -> Neon reported_questions
   `backend_dirty` and survives a pull until the backend acknowledges it.
 - Correcting from the console (Reported tab -> *Fix question*) closes the
   report in the same transaction; *Undo* reopens exactly those reports.
-- The backend side is `apps_script/AdminReports.gs`; see `apps_script/README.md`.
+- The backend side ships with the backend repo (`gas/admin-reports.gs`, or
+  `handlers/pipeline.ts` on Supabase); see `apps_script/README.md` for the contract.
 
 ### Correct from the backend (no console)
 

@@ -16,8 +16,9 @@ directions, and closes reports whose question has been corrected.
               path: the app, the console, admin_apply.
     3. PUSH   resolvereports -> tells the backend about every report resolved
               or reopened here (backend_dirty rows), so the app stops showing
-              it as open. If the Apps Script has not been updated with
-              apps_script/AdminReports.gs yet, the rows simply stay pending.
+              it as open. Both backends ship it now (backend repo:
+              handlers/pipeline.ts and gas/admin-reports.gs); on a backend
+              without it the rows simply stay pending.
 
     python -m sync.sync_reports                # pull + reconcile + push
     python -m sync.sync_reports --push-only
@@ -249,8 +250,9 @@ def run(conn, do_pull=True, do_push=True, full=False, dry_run=False):
                 stats["pushed"], stats["push_status"] = len(done), status
                 if status == "endpoint-missing":
                     print(f"WARNING: backend has no 'resolvereports' action yet - "
-                          f"{len(items)} change(s) stay pending. Deploy "
-                          f"apps_script/AdminReports.gs.")
+                          f"{len(items)} change(s) stay pending. Deploy the "
+                          f"current backend (handlers/pipeline.ts or "
+                          f"gas/admin-reports.gs) and publish a new version.")
                 else:
                     print(f"Pushed {len(done)} of {len(items)} pending change(s)")
     finally:
