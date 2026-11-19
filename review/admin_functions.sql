@@ -781,6 +781,85 @@ CREATE TABLE IF NOT EXISTS correction_source_aliases_v2 (
     corrected_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS reported_questions (
+    id              TEXT PRIMARY KEY,
+    uid             TEXT,
+    qid             BIGINT,
+    file_id         TEXT,
+    question_snapshot TEXT,
+    options_snapshot  TEXT,
+    correct_index   INTEGER,
+    chosen_index    INTEGER,
+    reason          TEXT,
+    note            TEXT,
+    reported_by     TEXT,
+    reported_at     TIMESTAMPTZ,
+    status          TEXT,
+    resolved_at     TIMESTAMPTZ,
+    resolved_by     TEXT,
+    corrected       BOOLEAN DEFAULT FALSE,
+    corrected_snapshot TEXT,
+    section         TEXT,
+    app_version     TEXT,
+    migrated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- backend_dirty = a change made here that the Apps Script backend has not
+-- received yet (pushed by sync/sync_reports.py). correction_audit_id links a
+-- report to the admin correction that closed it, so an undo can reopen it.
+ALTER TABLE reported_questions
+    ADD COLUMN IF NOT EXISTS backend_dirty       boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS backend_synced_at   timestamptz,
+    ADD COLUMN IF NOT EXISTS correction_audit_id bigint;
+CREATE INDEX IF NOT EXISTS idx_reported_questions_qid ON reported_questions (qid);
+CREATE INDEX IF NOT EXISTS idx_reported_questions_dirty
+    ON reported_questions (id) WHERE backend_dirty;
+
+-- Close every open report about a question (and about questions merged into
+-- it) that was corrected after the report was filed. Called by the pipeline
+-- for all corrections, and by abhyas_apply_correction for the one just made.
+CREATE OR REPLACE FUNCTION abhyas_reconcile_reports(
+    p_qids     bigint[] DEFAULT NULL,
+    p_actor    text     DEFAULT 'reconcile',
+    p_audit_id bigint   DEFAULT NULL
+) RETURNS text[]
+LANGUAGE plpgsql AS $fn$
+DECLARE
+    v_ids text[];
+BEGIN
+    WITH RECURSIVE fam(root, id) AS (
+        SELECT q.id, q.id FROM questions q
+         WHERE q.canonical_id IS NULL
+           AND (p_qids IS NULL OR q.id = ANY (p_qids))
+        UNION ALL
+        SELECT f.root, c.id FROM questions c JOIN fam f ON c.canonical_id = f.id
+    ), hit AS (
+        SELECT rq.id AS report_id, f.root
+          FROM reported_questions rq
+          JOIN fam f ON f.id = rq.qid
+          JOIN questions q ON q.id = f.root
+         WHERE rq.status IS DISTINCT FROM 'resolved'
+           AND q.corrected_at IS NOT NULL
+           AND (rq.reported_at IS NULL OR q.corrected_at >= rq.reported_at)
+    ), upd AS (
+        UPDATE reported_questions rq
+           SET status = 'resolved', resolved_at = now(), resolved_by = p_actor,
+               corrected = true, backend_dirty = true,
+               -- a re-close by the pipeline (stale backend answered 'open')
+               -- must not sever the link to the correction that first closed it
+               correction_audit_id = coalesce(p_audit_id, rq.correction_audit_id),
+               corrected_snapshot = (
+                   SELECT jsonb_build_object('question', q.question_text,
+                          'options', q.options, 'correctIndex', q.correct_index,
+                          'explanation', q.explanation)::text
+                     FROM questions q WHERE q.id = hit.root)
+          FROM hit WHERE rq.id = hit.report_id
+        RETURNING rq.id
+    )
+    SELECT coalesce(array_agg(id), '{}') INTO v_ids FROM upd;
+    RETURN v_ids;
+END
+$fn$;
+
 -- Resolve a reference to the LIVE question row: numeric id, or public qn id
 -- (case-insensitive), following canonical_id hops left by merges.
 CREATE OR REPLACE FUNCTION abhyas_resolve_question(p_ref text)
@@ -844,6 +923,8 @@ DECLARE
     v_opt jsonb;
     v_alias_id bigint;
     v_replaced jsonb := '[]'::jsonb;
+    v_audit bigint;
+    v_reports text[];
 BEGIN
     SELECT r.question_id, r.requested_id, r.hops
       INTO v_id, v_requested, v_hops
@@ -947,10 +1028,13 @@ BEGIN
                 'explanation', coalesce(p_explanation, '')),
             p_note, coalesce(p_actor, 'console'), v_recorded,
             v_old.identity_key, v_old.quality_score, v_old.corrected_at,
-            v_alias_id, v_replaced);
+            v_alias_id, v_replaced)
+    RETURNING id INTO v_audit;
+
+    v_reports := abhyas_reconcile_reports(ARRAY[v_id], coalesce(p_actor, 'console'), v_audit);
 
     RETURN jsonb_build_object('ok', true, 'id', v_id,
-        'audit_id', (SELECT max(id) FROM admin_corrections WHERE question_id = v_id),
+        'audit_id', v_audit, 'reports_resolved', to_jsonb(v_reports),
         'requested_id', v_requested, 'canonical_hops', v_hops,
         'stable_qn_id', v_old.stable_qn_id, 'source_recorded', v_recorded);
 END
@@ -1015,6 +1099,12 @@ BEGIN
             null::correction_source_aliases_v2, v_a.replaced_aliases)
         ON CONFLICT DO NOTHING;
     END IF;
+
+    UPDATE reported_questions
+       SET status = 'open', resolved_at = NULL, resolved_by = NULL,
+           corrected = false, corrected_snapshot = NULL,
+           backend_dirty = true, correction_audit_id = NULL
+     WHERE correction_audit_id = v_a.id;
 
     UPDATE admin_corrections SET reverted_at = now(), reverted_by = coalesce(p_actor, 'console')
      WHERE id = v_a.id;

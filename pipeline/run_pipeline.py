@@ -106,11 +106,13 @@ def _env_int(name, default):
 # (export / upload / chapters) still get to run.
 GEMINI_TIMEOUT = _env_int("GEMINI_STEP_TIMEOUT", 28800)
 
-# Parts are assigned by a hash of the question id, so deleting or adding one
-# question no longer shifts every later part (and re-uploads them all).
-# EXPORT_STABLE_PARTS=0 restores sequential 50/50/37 splitting.
-EXPORT_EXTRA = ([] if os.getenv("EXPORT_STABLE_PARTS", "1") == "0"
-                else ["--stable-parts"])
+# Default layout: every subtopic is cut into files of MAX_PER_FILE (50)
+# questions in order and the LAST file takes the remainder (137 -> 50/50/37).
+# EXPORT_STABLE_PARTS=1 switches to hash-assigned parts, which keep a question
+# in the same file across runs but are UNEVEN and can exceed 50 per file
+# (100 questions -> 45/55), so it is opt-in.
+EXPORT_EXTRA = (["--stable-parts"] if os.getenv("EXPORT_STABLE_PARTS", "0") == "1"
+                else [])
 
 # Optional wall-clock budget for the whole run (seconds). In CI set it a bit
 # below the job timeout: the elastic Gemini step is then shortened so that
@@ -119,6 +121,10 @@ PIPELINE_BUDGET = _env_int("PIPELINE_BUDGET_SECONDS", 0)
 BUDGET_RESERVE_AFTER_GEMINI = 1500   # qn_ids + export + upload + chapters
 
 STEPS = [
+    # Versioned schema changes (migrations/NNN_*.sql), applied once each.
+    # Fatal: every later step assumes the schema is current.
+    ("migrate",     "Apply schema migrations",
+     "utils.migrate", [],                                       120),
     ("sync",        "Sync from Drive",
      "sync.sync_any_level", ["all"],                        1800),
     ("corrections", "Apply corrections to Neon",
@@ -126,6 +132,12 @@ STEPS = [
     # v7 dedupe: no --no-near flag (removed in v7, run near-diff via --samples)
     ("dedupe",      "Exact dedupe (content identity, per chapter, v9)",
      "dedupe.dedupe_exact", ["--apply", "--quiet"],           900),
+    # Pull reports from the Apps Script backend, close those whose question was
+    # corrected (after dedupe, so merged duplicates resolve to the survivor),
+    # and push resolutions back so the app stops showing them as open.
+    # Non-fatal: a backend hiccup must not stop questions from publishing.
+    ("reports",     "Sync reported questions (pull, close, push back)",
+     "sync.sync_reports", [],                                 600),
     ("kw_l5",       "Keyword classify level5",
      "classify.classify_any_level", ["level5"],                  600),
     ("kw_l7",       "Keyword classify level7",
@@ -143,7 +155,7 @@ STEPS = [
     # last manual run had no public id, so the export carried public_qn: null.
     ("qn_ids",      "Assign stable public qn ids",
      "export.assign_stable_qn_ids", [],                        600),
-    ("export",      "Export to JSON (stable parts)",
+    ("export",      "Export to JSON (50 per file, remainder last)",
      "export.export_any_level", ["all"] + EXPORT_EXTRA,        900),
     ("upload",      "Upload JSON to Drive",
      "upload.upload_any_level", ["all", "--workers", "6"],    1800),
@@ -171,7 +183,7 @@ PARALLEL_PREFIX = "kw_"
 #     index that points at old parts while the parts themselves moved on.
 # Add "sync" here if you want a Drive outage to red the run (arguably
 # correct: with sync failed, the pipeline re-exports stale Neon data).
-FATAL_STEPS = {"sync", "corrections", "dedupe", "export", "upload",
+FATAL_STEPS = {"migrate", "sync", "corrections", "dedupe", "export", "upload",
                "chapters", "chapters_up"}
 
 # A failed sync is worth one retry before the run stops; corrections retries
@@ -188,7 +200,7 @@ OPTIONAL_STEPS = set()   # step names that may be skipped if their script is abs
 ALL_STEP_NAMES = [s[0] for s in STEPS]
 
 # Which steps need which kind of credentials.
-DB_STEPS = {"sync", "corrections", "dedupe", "kw_l5", "kw_l7", "kw_gk",
+DB_STEPS = {"migrate", "sync", "corrections", "dedupe", "reports", "kw_l5", "kw_l7", "kw_gk",
             "gemini", "qn_ids", "export", "chapters", "chapters_up"}
 DRIVE_STEPS = {"sync", "upload", "chapters_up"}
 
@@ -634,6 +646,40 @@ def run_parallel(group, fh, quiet):
     return results
 
 
+def collect_warnings(results):
+    """Steps that did not stop the run but did not do their job either."""
+    out = []
+    for name, ok, _elapsed, note in results:
+        if name in FATAL_STEPS:
+            continue
+        if not ok:
+            out.append((name, f"failed: {note}"))
+        elif "budget" in str(note):
+            out.append((name, f"skipped, {note}"))
+    return out
+
+
+def write_warnings(results, log_dir=None):
+    """Non-fatal problems must not decay silently: put them on the run page as
+    annotations and in logs/warnings.txt, which the workflow turns into an
+    issue. Returns the warnings (empty list leaves no file behind)."""
+    warnings = collect_warnings(results)
+    path = os.path.join(log_dir or LOG_DIR, "warnings.txt")
+    if not warnings:
+        if os.path.exists(path):
+            os.remove(path)
+        return warnings
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        for name, text in warnings:
+            fh.write(f"- `{name}` {text}\n")
+    if os.getenv("GITHUB_ACTIONS"):
+        for name, text in warnings:
+            one_line = " ".join(str(text).split())[:300]
+            print(f"::warning title=Pipeline step {name}::{one_line}")
+    return warnings
+
+
 def write_ci_summary(results, aborted):
     """Render the run in GitHub Actions without another dependency."""
     path = os.getenv("GITHUB_STEP_SUMMARY")
@@ -834,6 +880,7 @@ def main():
         log(fh, "=" * 66)
 
     write_ci_summary(results, aborted)
+    write_warnings(results)
 
     # Non-zero exit so CI (GitHub Actions / Task Scheduler) notices failures.
     # Only failures in FATAL_STEPS turn the run red. Non-fatal failures

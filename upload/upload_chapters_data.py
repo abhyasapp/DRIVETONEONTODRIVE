@@ -23,13 +23,9 @@ Usage:
 """
 
 import argparse
-import hashlib
 import os
-import random
 import sys
-import time
 
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 OAUTH_CREDENTIALS_FILE = "oauth-credentials.json"
@@ -41,13 +37,13 @@ LOCAL_FILE   = "abhyas_export/chapters-data.js"
 FNAME        = "chapters-data.js"
 MIME         = "application/javascript"
 
-RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
 
 # ============================================================================
 # OAUTH
 # ============================================================================
 
+from utils.common import retry as _retry, sha256_of, md5_of
 from utils.drive_auth import drive_client as client  # shared OAuth
 
 
@@ -55,43 +51,10 @@ from utils.drive_auth import drive_client as client  # shared OAuth
 # RETRY
 # ============================================================================
 
-def _retry(fn, max_attempts=5, base=1.0, cap=30.0):
-    last = None
-    for attempt in range(max_attempts):
-        try:
-            return fn()
-        except HttpError as e:
-            status = getattr(e.resp, "status", None)
-            last = e
-            if status not in RETRYABLE_STATUSES:
-                raise
-            if attempt == max_attempts - 1:
-                raise
-            delay = min(base * (2 ** attempt) + random.random(), cap)
-            time.sleep(delay)
-    if last:
-        raise last
-
 
 # ============================================================================
 # HASH  (compared against Drive's own md5, so it works on a fresh CI runner)
 # ============================================================================
-
-def md5_of(path):
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
 
 def validate_local(path):
     """Refuse to publish a truncated or implausible chapters-data.js."""

@@ -1,0 +1,108 @@
+name: Validate secrets and write credential files
+description: >
+  One place for what the daily pipeline and the admin-corrections workflow
+  both need: check the secrets that were asked for, then write
+  service-account.json, the OAuth files and .env. The calling workflow must
+  delete them again in an `if: always()` step (composite actions have no
+  post step).
+inputs:
+  need:
+    description: "Comma list of: db, backend, drive_read, drive_write, gemini"
+    default: "db"
+  database_url:           { required: false, default: "" }
+  apps_script_url:        { required: false, default: "" }
+  sync_key:               { required: false, default: "" }
+  service_account_json:   { required: false, default: "" }
+  gdrive_oauth_token:     { required: false, default: "" }
+  oauth_token_pickle:     { required: false, default: "" }
+  oauth_credentials_json: { required: false, default: "" }
+  gemini_api_key:         { required: false, default: "" }
+  gemini_api_key_2:       { required: false, default: "" }
+  cerebras_api_key:       { required: false, default: "" }
+  openrouter_api_key:     { required: false, default: "" }
+runs:
+  using: composite
+  steps:
+    - name: Check required secrets exist
+      shell: bash
+      env:
+        NEED: ${{ inputs.need }}
+        DATABASE_URL: ${{ inputs.database_url }}
+        ABHYAS_APPS_SCRIPT_URL: ${{ inputs.apps_script_url }}
+        ABHYAS_SYNC_KEY: ${{ inputs.sync_key }}
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ inputs.service_account_json }}
+        GDRIVE_OAUTH_TOKEN: ${{ inputs.gdrive_oauth_token }}
+        OAUTH_TOKEN_PICKLE: ${{ inputs.oauth_token_pickle }}
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+      run: |
+        missing=0
+        need() { case ",$NEED," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+        req()  { if [ -z "${!1:-}" ]; then echo "::error::Secret $1 is empty or not set"; missing=1; fi; }
+        if need db;         then req DATABASE_URL; fi
+        if need backend;    then req ABHYAS_APPS_SCRIPT_URL; req ABHYAS_SYNC_KEY; fi
+        if need drive_read; then req GOOGLE_SERVICE_ACCOUNT_JSON; fi
+        if need gemini;     then req GEMINI_API_KEY; fi
+        if need drive_write && [ -z "$GDRIVE_OAUTH_TOKEN" ] && [ -z "$OAUTH_TOKEN_PICKLE" ]; then
+          echo "::error::Set GDRIVE_OAUTH_TOKEN (recommended, JSON) or OAUTH_TOKEN_PICKLE (base64)"
+          missing=1
+        fi
+        exit $missing
+
+    - name: Write service account file
+      if: ${{ inputs.service_account_json != '' }}
+      shell: bash
+      env:
+        SERVICE_ACCOUNT_JSON: ${{ inputs.service_account_json }}
+      run: |
+        printf '%s' "$SERVICE_ACCOUNT_JSON" > service-account.json
+        python -c "import json; d=json.load(open('service-account.json')); assert d.get('type')=='service_account' and d.get('private_key'), 'not a service-account key'; print('service-account.json OK:', d['client_email'])" \
+          || { echo "::error::GOOGLE_SERVICE_ACCOUNT_JSON is not valid service-account JSON (paste the whole file contents)"; exit 1; }
+
+    - name: Write OAuth files
+      shell: bash
+      env:
+        OAUTH_CREDENTIALS_B64: ${{ inputs.oauth_credentials_json }}
+        OAUTH_TOKEN_B64: ${{ inputs.oauth_token_pickle }}
+        GDRIVE_OAUTH_TOKEN: ${{ inputs.gdrive_oauth_token }}
+      run: |
+        # Preferred: GDRIVE_OAUTH_TOKEN (JSON) is read straight from the env by
+        # the upload scripts - nothing to write, only to validate.
+        if [ -n "$GDRIVE_OAUTH_TOKEN" ]; then
+          python -c "import json,os; d=json.loads(os.environ['GDRIVE_OAUTH_TOKEN']); assert d.get('refresh_token'), 'no refresh_token'; print('GDRIVE_OAUTH_TOKEN JSON OK')" \
+            || { echo "::error::GDRIVE_OAUTH_TOKEN is not valid token JSON (run: python -m utils.extract_token)"; exit 1; }
+        fi
+        # Legacy fallback: base64 files.
+        if [ -n "$OAUTH_CREDENTIALS_B64" ]; then
+          printf '%s' "$OAUTH_CREDENTIALS_B64" | base64 -d > oauth-credentials.json \
+            || { echo "::error::OAUTH_CREDENTIALS_JSON is not valid base64 (use: base64 -w0 oauth-credentials.json)"; exit 1; }
+        fi
+        if [ -n "$OAUTH_TOKEN_B64" ]; then
+          printf '%s' "$OAUTH_TOKEN_B64" | base64 -d > oauth-token.pickle \
+            || { echo "::error::OAUTH_TOKEN_PICKLE is not valid base64 (use: base64 -w0 oauth-token.pickle)"; exit 1; }
+        fi
+
+    - name: Write .env
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+        ABHYAS_APPS_SCRIPT_URL: ${{ inputs.apps_script_url }}
+        ABHYAS_SYNC_KEY: ${{ inputs.sync_key }}
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        GEMINI_API_KEY_2: ${{ inputs.gemini_api_key_2 }}
+        CEREBRAS_API_KEY: ${{ inputs.cerebras_api_key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+      run: |
+        python - <<'PY'
+        import os
+        keys = ["DATABASE_URL", "ABHYAS_APPS_SCRIPT_URL", "ABHYAS_SYNC_KEY",
+                "GEMINI_API_KEY", "GEMINI_API_KEY_2",
+                "CEREBRAS_API_KEY", "OPENROUTER_API_KEY"]
+        with open(".env", "w") as f:
+            for k in keys:
+                v = os.environ.get(k, "").strip()   # drop stray newline/space from pasting
+                if "\n" in v or "\r" in v:
+                    raise SystemExit(f"{k} contains a line break - re-paste it on ONE line")
+                esc = v.replace("\\", "\\\\").replace('"', '\\"')
+                f.write(f'{k}="{esc}"\n')
+                print(f"{k}: {len(v)} chars")
+        PY

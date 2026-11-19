@@ -13,6 +13,7 @@ from sync import admin_apply
 from upload import upload_chapters_data as ucd
 from review import dashboard as dash
 from sync import sync_any_level as sal
+from utils import migrate
 
 
 def _page(n, start):
@@ -111,25 +112,18 @@ class ChaptersUploadTests(unittest.TestCase):
 
 
 class AdminApplyTests(unittest.TestCase):
-    def test_build_correction_carries_qid_and_before_state(self):
-        row = (42, "old?", ["a", "b"], 7, "n:3", None, "drv1", 5)
-        corr = admin_apply.build_correction(
-            row, {"question": "new?", "options": ["a", "b"], "correctIndex": 1}, "2026-01-01T00:00:00+00:00")
-        self.assertEqual(corr["qid"], "42")
-        self.assertEqual(corr["fileId"], "drv1")
-        self.assertEqual(corr["before"]["question"], "old?")
-        self.assertEqual(corr["after"]["correctIndex"], 1)
-
     def test_run_rejects_bad_items_without_touching_the_db(self):
         conn = mock.MagicMock()
-        with mock.patch.object(admin_apply, "ensure_schema"):
-            res = admin_apply.run([
-                {"qn": "", "question": "x", "options": ["a", "b"], "correctIndex": 0},
-                {"qn": "1", "question": "x", "options": ["a", "b"], "correctIndex": 5},
-                {"qn": "1", "question": " ", "options": ["a", "b"], "correctIndex": 0},
-            ], apply=False, conn=conn)
+        cur = conn.cursor.return_value
+        cur.fetchone.return_value = (True,)          # functions "installed"
+        res = admin_apply.run([
+            {"qn": "", "question": "x", "options": ["a", "b"], "correctIndex": 0},
+            {"qn": "1", "question": "x", "options": ["a", "b"], "correctIndex": 5},
+            {"qn": "1", "question": " ", "options": ["a", "b"], "correctIndex": 0},
+        ], apply=False, conn=conn)
         self.assertEqual([r[1] for r in res], [False, False, False])
         conn.rollback.assert_called_once()
+        self.assertFalse([c for c in cur.execute.call_args_list if "SAVEPOINT" in str(c)])
 
 
 class PipelinePolicyTests(unittest.TestCase):
@@ -137,10 +131,23 @@ class PipelinePolicyTests(unittest.TestCase):
         self.assertIn("chapters", rp.FATAL_STEPS)
         self.assertIn("chapters_up", rp.FATAL_STEPS)
 
-    def test_export_uses_stable_parts_by_default(self):
+    def test_export_keeps_the_50_per_file_layout_by_default(self):
         export = {s[0]: s for s in rp.STEPS}["export"]
-        if os.getenv("EXPORT_STABLE_PARTS", "1") != "0":
-            self.assertIn("--stable-parts", export[3])
+        if os.getenv("EXPORT_STABLE_PARTS", "0") != "1":
+            self.assertNotIn("--stable-parts", export[3])
+
+    def test_sequential_parts_are_50_with_the_remainder_last(self):
+        from export.export_any_level import MAX_PER_FILE, partition_items
+        self.assertEqual(MAX_PER_FILE, 50)
+        sizes = lambda n: [len(p) for p in partition_items([(i,) for i in range(n)], 50)]
+        self.assertEqual(sizes(137), [50, 50, 37])
+        self.assertEqual(sizes(100), [50, 50])
+        self.assertEqual(sizes(51), [50, 1])
+        self.assertEqual(sizes(37), [37])
+        self.assertEqual(sizes(0), [])
+        for n in range(1, 400):
+            parts = sizes(n)
+            self.assertTrue(all(p == 50 for p in parts[:-1]) and 1 <= parts[-1] <= 50, (n, parts))
 
 
 class SyncDeleteGuardTests(unittest.TestCase):
@@ -178,6 +185,53 @@ class DashboardGuardTests(unittest.TestCase):
             {**base, "Content-Type": "application/json", "Origin": "https://evil.example"}, post=True))
         self.assertFalse(dash.request_allowed(
             {**base, "Content-Type": "application/x-www-form-urlencoded"}, post=True))
+
+
+class MigrationDiscoveryTests(unittest.TestCase):
+    def _dir(self, names):
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        for n in names:
+            open(os.path.join(d, n), "w").write("SELECT 1;")
+        return d
+
+    def test_only_numbered_sql_files_in_order(self):
+        d = self._dir(["010_b.sql", "002_a.sql", "README.md", "notes.sql", "1_bad.sql"])
+        self.assertEqual([v for v, _ in migrate.discover(d)], ["002", "010"])
+
+    def test_duplicate_numbers_are_refused(self):
+        d = self._dir(["001_a.sql", "001_b.sql"])
+        with self.assertRaises(SystemExit):
+            migrate.discover(d)
+
+    def test_repo_migrations_are_well_formed(self):
+        found = migrate.discover()
+        self.assertTrue(found and found[0][0] == "001")
+        for _v, path in found:
+            sql = open(path, encoding="utf-8").read().upper()
+            self.assertNotIn("\nBEGIN;", "\n" + sql, f"{path}: runner owns the transaction")
+            self.assertNotIn("\nCOMMIT;", "\n" + sql, f"{path}: runner owns the transaction")
+
+    def test_non_fatal_failures_are_surfaced_not_swallowed(self):
+        results = [("sync", True, 1.0, "ok"), ("reports", False, 2.0, "boom"),
+                   ("gemini", True, 0.0, "skipped (budget)"), ("kw_l5", True, 1.0, "ok")]
+        self.assertEqual([n for n, _ in rp.collect_warnings(results)], ["reports", "gemini"])
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        got = rp.write_warnings(results, log_dir=d)
+        self.assertEqual(len(got), 2)
+        text = open(os.path.join(d, "warnings.txt"), encoding="utf-8").read()
+        self.assertIn("`reports` failed: boom", text)
+        # a clean run removes the stale file so the workflow opens no issue
+        rp.write_warnings([("sync", True, 1.0, "ok")], log_dir=d)
+        self.assertFalse(os.path.exists(os.path.join(d, "warnings.txt")))
+
+    def test_a_failed_fatal_step_is_not_reported_as_a_warning(self):
+        self.assertEqual(rp.collect_warnings([("export", False, 1.0, "x")]), [])
+
+    def test_migrate_is_the_first_fatal_step(self):
+        self.assertEqual(rp.STEPS[0][0], "migrate")
+        self.assertIn("migrate", rp.FATAL_STEPS)
 
 
 if __name__ == "__main__":

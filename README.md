@@ -1,7 +1,7 @@
 # Abhyas daily pipeline
 
-Drive -> Neon (sync) -> corrections -> dedupe -> keyword + Gemini classify ->
-export JSON -> upload to Drive -> chapters-data.js -> upload.
+migrate -> Drive -> Neon (sync) -> corrections -> dedupe -> reports -> keyword + Gemini
+classify -> export JSON -> upload to Drive -> chapters-data.js -> upload.
 
 Corrections now carry a stable `qid`; `sync/apply_corrections.py` resolves that
 Neon question id first (following canonical reassignments) and only falls back
@@ -14,11 +14,15 @@ bounded per run (`--backlog-limit`, default 100) and respects `--level`.
 
 ```
 .github/workflows/daily_pipeline.yml   CI schedule + manual run
+.github/workflows/apply_admin_corrections.yml  qn-id corrections from the backend, applied + published
+.github/actions/                       shared setup (python deps, credential files) for both workflows
+apps_script/ AdminReports.gs (resolvereports, admincorrect) + the backend contract
 pipeline/run_pipeline.py               orchestrator (retries, timeouts, exit codes)
-sync/        sync_any_level, apply_corrections
+sync/        sync_any_level, apply_corrections, sync_reports, admin_apply
+utils/       migrate (versioned schema), db, drive_auth, backend (one client for the backend), common (retry, hashes), admin_sql (self-installing SQL functions)
 dedupe/      dedupe_exact (pipeline), near_candidates (fuzzy review queue),
              content_identity, merge_questions, source_aliases
-             the old v4 CSV exporter lives in archive/dedupe_review.py
+             the old v4 CSV exporter was removed (see git history)
              scope: duplicates are grouped per CHAPTER (same identity_key
              inside one chapter), never across chapters/levels.
              policy: every copy that agrees with a sibling is merged, even
@@ -53,12 +57,13 @@ utils/       db.py (Neon retry), drive_auth.py (OAuth), extract_token.py
 config/      settings.py (Drive parent, paths) + keyword JSONs
 review/      dashboard.py + duplicate_reviews.py  (local admin reviewer)
              index.html + admin_functions.sql + identity.js  (hosted console)
-tools/       cleanup_drive, boost_keywords   (manual helpers)
+tools/       cleanup_drive, near_duplicates.sql   (manual helpers)
 tests/       smoke.py + unittest suites        (offline, run in CI)
              node suites: identity parity (no deps), admin SQL, reported SQL
              (the SQL suites need PGlite: npm install --no-save @electric-sql/pglite)
              all of them run in CI before the pipeline starts
-archive/     one-off scripts, not used by the pipeline
+RUNBOOK.md   what to do when a run fails, how to re-run, routine care
+bootstrap/   one-time scripts for building a new database (not used by the pipeline)
 ```
 
 ## Run
@@ -71,6 +76,9 @@ python -m pipeline.run_pipeline --dry-run
 python -m pipeline.run_pipeline --only export,upload
 python -m pipeline.run_pipeline --skip-gemini
 python -m unittest tests.test_corrections tests.test_apply_corrections_qid # qid + backlog retry checks
+python -m unittest tests.test_hardening tests.test_reports_sync           # guards, pagination, reports sync
+node tests/test_apps_script.mjs                                           # Apps Script module
+TEST_DATABASE_URL=postgresql://u:pw@127.0.0.1/db python -m unittest tests.test_postgres_e2e   # real Postgres, local only (CI runs it in a service container)
 ```
 
 Correction-only runs:
@@ -105,8 +113,9 @@ instead, which keeps unchanged questions in the same file across runs.
 
 Three entry points, one behaviour: the question is rewritten, a source alias is
 stored so the next Drive sync cannot restore the old text, the event is logged
-in `applied_corrections`, and (console path) a before/after snapshot goes to
-`admin_corrections`. Both the numeric `questions.id` and the public qn id
+in `applied_corrections`, and a before/after snapshot goes to
+`admin_corrections` - on every path, because the console, the CLI and the
+backend-triggered workflow all call the same SQL function. Both the numeric `questions.id` and the public qn id
 (`50011.110001`, case-insensitive) work, and ids that were merged away resolve
 to the surviving question.
 
@@ -119,7 +128,9 @@ to the surviving question.
   `review/identity.js`. An app admin backend can call this over Neon's HTTP
   endpoint with a scoped role.
 - **CLI** — `python -m sync.admin_apply fixes.json [--apply]` (dry run by
-  default); the JSON format is documented in the script header.
+  default); the JSON format is documented in the script header. It calls the
+  same SQL function, so its corrections show up in *Recent corrections* and can
+  be undone from the console; an identical resubmission is a no-op.
 
 Every console correction can be undone from *Recent corrections (undo)*:
 `abhyas_revert_correction(audit_id)` restores the previous text, answer, identity
@@ -132,6 +143,33 @@ headers and any cross-site or non-JSON POST (DNS-rebinding / CSRF protection).
 The corrected text reaches students at the next export. To publish sooner, run
 the workflow manually with `only` = `qn_ids,export,upload,chapters,chapters_up`.
 
+## Reported questions: one loop
+
+```
+app report -> backend -> [pipeline: reports step] -> Neon reported_questions
+                                  ^                        |
+   resolvereports (push-back) ----+---- close when the question is corrected
+```
+
+- `sync.sync_reports` (pipeline step `reports`, non-fatal, runs after dedupe)
+  pulls new and changed reports (a full re-read every 7 days catches status
+  changes the backend might not flag), closes every open report whose question
+  - or a duplicate merged into it - was corrected after the report was filed,
+  and pushes each resolution back so the app stops showing it as open.
+- A change made here (console Resolve/Reopen, a correction, an undo) is marked
+  `backend_dirty` and survives a pull until the backend acknowledges it.
+- Correcting from the console (Reported tab -> *Fix question*) closes the
+  report in the same transaction; *Undo* reopens exactly those reports.
+- The backend side is `apps_script/AdminReports.gs`; see `apps_script/README.md`.
+
+### Correct from the backend (no console)
+
+The backend's `admincorrect` action validates a qn-id correction and starts the
+*Apply admin corrections* workflow (`workflow_dispatch`), which runs
+`python -m sync.admin_apply`, re-exports and uploads, and pushes the closed
+reports back. The workflow waits for a running daily pipeline instead of
+overlapping it, and installs the SQL functions itself if they are missing.
+
 ## Safety limits (all overridable)
 
 | Guard | Default | Override |
@@ -140,7 +178,7 @@ the workflow manually with `only` = `qn_ids,export,upload,chapters,chapters_up`.
 | Dedupe refuses an unusually large merge | >500 merges or >5% of live questions (exit 3) | `DEDUPE_ALLOW_LARGE=1`, `DEDUPE_MAX_MERGES`, `DEDUPE_MAX_MERGE_PCT` |
 | Corrections fetch is paginated; watermark never passes unread items | 500/page, 50 pages | - |
 | One failing correction stays in `correction_backlog` and no longer blocks the run | - | `CORRECTIONS_STRICT=1` |
-| Export parts assigned by hashed id (stable files across runs) | on | `EXPORT_STABLE_PARTS=0` |
+| Export layout: files of 50 questions per subtopic, remainder in the last file | on | `EXPORT_STABLE_PARTS=1` switches to hash-assigned parts (uneven, can exceed 50) |
 | Gemini shortened to fit the run budget | `PIPELINE_BUDGET_SECONDS=9900` in CI | - |
 | `chapters-data.js` validated, written atomically, uploaded in place (same Drive id) | - | - |
 

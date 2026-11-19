@@ -70,3 +70,18 @@ Do the same for `oauth-token.pickle` -> `OAUTH_TOKEN_PICKLE`.
 | `contains a line break` | Value was wrapped over two lines; paste it on one line |
 | `DB connect failed after 4 tries` | Wrong `DATABASE_URL`, missing `?sslmode=require`, or the Neon project is paused/out of quota |
 | `No valid OAuth credentials and stdin is not a terminal` | Token missing/expired/revoked; redo "Getting GDRIVE_OAUTH_TOKEN" |
+
+
+## Backend-side secrets for admin corrections (not GitHub secrets)
+
+Only needed if you use the backend's `admincorrect` action; set them in the
+Apps Script *Script properties* (or the Edge Function secrets). See
+`apps_script/README.md`.
+
+| Name | What it is |
+|---|---|
+| `ABHYAS_ADMIN_KEY` | new random secret for `admincorrect`; keep it different from `ABHYAS_SYNC_KEY` |
+| `GITHUB_TOKEN` | fine-grained personal access token limited to this repository with *Actions: Read and write*; it can start the workflow and nothing else |
+
+No new GitHub Actions secret is required: the new workflow reuses the existing
+ones.

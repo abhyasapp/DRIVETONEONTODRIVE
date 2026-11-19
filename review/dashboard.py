@@ -234,8 +234,8 @@ def api_issues():
         ("orphan_qs", "subtopic links → missing question", "SELECT count(*)::int c FROM question_subtopics qs LEFT JOIN questions q ON q.id=qs.question_id WHERE q.id IS NULL"),
         ("orphan_st", "subtopic links → missing subtopic", "SELECT count(*)::int c FROM question_subtopics qs LEFT JOIN subtopics s ON s.id=qs.subtopic_id WHERE s.id IS NULL"),
     ]
-    for iid, title, sql in orphans:
-        n = one(sql)["c"]
+    for iid, title, probe in orphans:
+        n = one(probe)["c"]
         add(iid, "error" if n else "ok", f"Orphaned rows: {title}", n,
             "referential integrity probe")
     n = one("SELECT count(*)::int c FROM applied_corrections")["c"]

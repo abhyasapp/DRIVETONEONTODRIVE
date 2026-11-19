@@ -1,0 +1,18 @@
+# Weekly dependency PRs. Each one runs the offline test suite (including the
+# real-Postgres test) before it can be merged, so an update that breaks the
+# pipeline is caught there instead of in the 06:00 run.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Keeps the commit-SHA pins in the workflows and the shared actions current.
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5

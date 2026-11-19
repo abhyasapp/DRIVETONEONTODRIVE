@@ -1,11 +1,7 @@
--- Migration: add stable public qn id to questions.
--- This is the readable public identity the app should use everywhere.
--- Internal PK stays as questions.id for Dogs/reports/backend internals.
--- Public shape target: LCCCSSSFQQQQ (level, chapter, subtopic, file scope, sequence).
-
-BEGIN;
-
+-- Add the stable public qn id to questions.
+-- This is the readable public identity the app uses everywhere; the internal
+-- primary key stays questions.id for reports and backend internals.
+-- Public shape target: LCCCSSSFQQQQ (level, chapter, subtopic, file scope,
+-- sequence). Idempotent: databases patched by hand earlier run it harmlessly.
 ALTER TABLE questions
   ADD COLUMN IF NOT EXISTS stable_qn_id TEXT UNIQUE;
-
-COMMIT;

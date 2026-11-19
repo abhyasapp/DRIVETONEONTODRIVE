@@ -31,7 +31,7 @@ from dedupe.content_identity import (
     identity, legacy_identity, source_question_key, source_location_key,
     compute_quality_score,
 )
-from dedupe.merge_questions import ensure_merge_schema, merge_question_rows
+from dedupe.merge_questions import ensure_merge_schema
 from dedupe.source_aliases import ensure_correction_source_alias_schema
 
 load_dotenv()
@@ -48,6 +48,10 @@ class BackendError(RuntimeError):
 
 
 def ensure_schema(cur, conn):
+    # sync_any_level normally adds this; applying a correction stamps it, so a
+    # correction run on its own (admin_apply) must not depend on a sync having
+    # happened first.
+    cur.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY, value TEXT
@@ -171,26 +175,9 @@ def fetch_corrections(since_ms, limit=500):
     return payload
 
 
+from utils.common import to_ms as _to_ms  # noqa: E402
+
 MAX_PAGES = 50
-
-
-def _to_ms(value):
-    """correctedAt may be epoch ms (int/str) or an ISO timestamp; return ms."""
-    if value is None:
-        return 0
-    if isinstance(value, (int, float)):
-        return int(value)
-    text = str(value).strip()
-    if text.isdigit():
-        return int(text)
-    from datetime import datetime, timezone
-    try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return 0
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
 
 
 def fetch_all_corrections(since_ms, limit=500, max_pages=MAX_PAGES):

@@ -13,7 +13,7 @@ import sys
 
 import psycopg2
 from dotenv import load_dotenv
-from psycopg2.extras import Json, execute_values
+from psycopg2.extras import execute_values
 
 from utils.db import connect as db_connect
 from dedupe.content_identity import (
