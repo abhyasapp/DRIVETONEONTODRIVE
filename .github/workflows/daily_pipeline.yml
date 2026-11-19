@@ -127,6 +127,27 @@ jobs:
           # No --quiet: full logs make failures diagnosable.
           python -m pipeline.run_pipeline "${args[@]}"
 
+      # ----- publish ------------------------------------------------------
+      # The app reads abhyasapp/content@main through jsDelivr, never Drive, so
+      # the upload above is invisible to learners until that repo's mirror runs.
+      # Ask it to run now instead of waiting for its schedule. Needs a
+      # fine-grained PAT with Actions: write on abhyasapp/content, stored as the
+      # CONTENT_SYNC_TOKEN secret; without it the mirror still publishes on its
+      # own cron, just later.
+      - name: Publish content to the app
+        env:
+          GH_TOKEN: ${{ secrets.CONTENT_SYNC_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CONTENT_SYNC_TOKEN not set - the content mirror will publish on its schedule"
+            exit 0
+          fi
+          if gh workflow run sync.yml --repo abhyasapp/content --ref main; then
+            echo "dispatched abhyasapp/content sync"
+          else
+            echo "::warning::could not dispatch the content mirror; it will publish on its schedule"
+          fi
+
       # ----- diagnostics -------------------------------------------------
 
       - name: Open an issue when the run fails
