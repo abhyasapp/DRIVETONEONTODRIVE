@@ -1,6 +1,9 @@
 # Weekly dependency PRs. Each one runs the offline test suite (including the
-# real-Postgres test) before it can be merged, so an update that breaks the
-# pipeline is caught there instead of in the 06:00 run.
+# real-Postgres test) via .github/workflows/ci.yml before it can be merged, so
+# an update that breaks the pipeline is caught there instead of in the 06:00
+# run. That workflow is what makes this sentence true - until it was added,
+# nothing in this repository listened to `pull_request`, and every PR arrived
+# with zero checks.
 version: 2
 updates:
   - package-ecosystem: pip

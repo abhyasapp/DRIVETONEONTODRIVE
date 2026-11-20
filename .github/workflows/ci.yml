@@ -1,0 +1,85 @@
+name: CI
+
+# The offline suite on every pull request.
+#
+# Before this file existed, nothing in this repository listened to
+# `pull_request` at all, so every Dependabot PR arrived with zero checks even
+# though .github/dependabot.yml promised "each one runs the offline test suite
+# (including the real-Postgres test) before it can be merged". This is that
+# promise, implemented.
+#
+# No secrets and no remote services: everything here runs against a throwaway
+# Postgres service container, never Neon and never Drive. The steps are the
+# same ones daily_pipeline.yml runs before it touches a credential, so a PR that
+# is green here starts the real run from a known-good state.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same PR cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Throwaway database for tests/test_postgres_e2e.py — real Postgres, never Neon.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: abhyastest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/abhyastest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup-python-deps
+
+      - name: Static check and unit tests (offline)
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyflakes
+          python -m pyflakes $(git ls-files '*.py' | grep -v '^bootstrap/')
+          python tests/smoke.py
+          python -m unittest tests.test_corrections tests.test_apply_corrections_qid \
+            tests.test_dedupe_logic tests.test_pipeline tests.test_keyword_match \
+            tests.test_export_ids tests.test_hardening tests.test_reports_sync \
+            tests.test_postgres_e2e tests.test_assign_stable_qn_ids
+
+      # The console ships its own identity/keyword JS and its own SQL; both are
+      # checked against the Python and against Postgres here, so a drift between
+      # the two implementations fails the PR instead of the 06:00 run.
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Console parity and SQL tests (offline)
+        run: |
+          set -euo pipefail
+          node tests/test_console_identity.mjs
+          npm install --no-save --ignore-scripts @electric-sql/pglite@0.5.16
+          node tests/test_admin_sql.mjs
+          node tests/test_reported_sql.mjs
+          node tests/test_apps_script.mjs
